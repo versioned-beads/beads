@@ -200,10 +200,8 @@ func runMigrations(ctx context.Context, db DBConn, minVersion int, tolerateExist
 	// One-shot large-rig notice. Treats a missing issues table as "fresh
 	// install" and emits nothing — on a first-ever run there is no rig to
 	// warn about, and the COUNT(*) query would error on the missing table.
-	var issueCount int64
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM issues").Scan(&issueCount); err == nil && issueCount > largeRigThreshold {
-		fmt.Fprintf(progressOut, "Large rig detected (%d issues). This migration may take up to 60 seconds; do not interrupt.\n", issueCount)
-	}
+	count, countErr := issueRowCounter(ctx, db)
+	emitLargeRigNotice(progressOut, count, countErr)
 
 	for _, mf := range pending {
 		data, err := upMigrations.ReadFile("migrations/" + mf.name)
@@ -237,6 +235,26 @@ func runMigrations(ctx context.Context, db DBConn, minVersion int, tolerateExist
 	}
 
 	return len(pending), nil
+}
+
+// issueRowCounter returns the current issues-table row count, or an error if
+// the table is unreachable (fresh install → table doesn't exist yet). The
+// caller uses the error as the "no warning" signal.
+func issueRowCounter(ctx context.Context, db DBConn) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM issues").Scan(&n)
+	return n, err
+}
+
+// emitLargeRigNotice writes the one-line large-rig warning to out when the
+// issues count exceeds largeRigThreshold. An error from the counter is
+// treated as "fresh install / table missing" and suppresses the warning —
+// see be-8ja for the UX rationale.
+func emitLargeRigNotice(out io.Writer, count int64, err error) {
+	if err != nil || count <= largeRigThreshold {
+		return
+	}
+	fmt.Fprintf(out, "Large rig detected (%d issues). This migration may take up to 60 seconds; do not interrupt.\n", count)
 }
 
 // humanMigrationName turns "0033_add_date_indexes.up.sql" into
