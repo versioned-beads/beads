@@ -8,12 +8,23 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io"
 	"io/fs"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+// progressOut is where migration progress lines are written. Defaults to
+// os.Stderr so that JSON pipelines on stdout (e.g. bd list --json | jq) are
+// not polluted. Unexported so tests in this package can swap it without
+// leaking a setter into production API.
+var progressOut io.Writer = os.Stderr
+
+const largeRigThreshold = 10000
 
 // DBConn is the minimal interface satisfied by *sql.DB, *sql.Tx, and *sql.Conn.
 // It provides query and exec methods needed by the migration runner.
@@ -186,11 +197,22 @@ func runMigrations(ctx context.Context, db DBConn, minVersion int, tolerateExist
 		return 0, nil
 	}
 
+	// One-shot large-rig notice. Treats a missing issues table as "fresh
+	// install" and emits nothing — on a first-ever run there is no rig to
+	// warn about, and the COUNT(*) query would error on the missing table.
+	var issueCount int64
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM issues").Scan(&issueCount); err == nil && issueCount > largeRigThreshold {
+		fmt.Fprintf(progressOut, "Large rig detected (%d issues). This migration may take up to 60 seconds; do not interrupt.\n", issueCount)
+	}
+
 	for _, mf := range pending {
 		data, err := upMigrations.ReadFile("migrations/" + mf.name)
 		if err != nil {
 			return 0, fmt.Errorf("reading migration %s: %w", mf.name, err)
 		}
+
+		fmt.Fprintf(progressOut, "Applying migration %04d: %s…\n", mf.version, humanMigrationName(mf.name))
+		start := time.Now()
 
 		// Both the embedded Dolt driver and the MySQL server driver are
 		// configured with multiStatements=true, so multi-statement .up.sql
@@ -210,9 +232,22 @@ func runMigrations(ctx context.Context, db DBConn, minVersion int, tolerateExist
 				return 0, fmt.Errorf("recording migration %s: %w", mf.name, err)
 			}
 		}
+
+		fmt.Fprintf(progressOut, "  done (%.1fs)\n", time.Since(start).Seconds())
 	}
 
 	return len(pending), nil
+}
+
+// humanMigrationName turns "0033_add_date_indexes.up.sql" into
+// "add_date_indexes" for the progress line.
+func humanMigrationName(filename string) string {
+	s := strings.TrimSuffix(filename, ".up.sql")
+	parts := strings.SplitN(s, "_", 2)
+	if len(parts) < 2 {
+		return s
+	}
+	return parts[1]
 }
 
 // isConcurrentInitError returns true for errors that are expected and harmless
