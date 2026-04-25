@@ -45,6 +45,16 @@ func testMainInner(m *testing.M) int {
 			return 1
 		}
 		testServerPort = port
+		// applyConfigDefaults reads BEADS_DOLT_SERVER_PORT first and only falls
+		// through to BEADS_DOLT_PORT (legacy). Setting only the legacy name
+		// silently loses to a pre-existing BEADS_DOLT_SERVER_PORT in the agent
+		// shell environment (gc-beads-bd exports the rig's gc.endpoint port),
+		// which routes the bench to the wrong server. Override both so the
+		// external port wins regardless of what the surrounding shell injected.
+		if err := os.Setenv("BEADS_DOLT_SERVER_PORT", extPortStr); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: set BEADS_DOLT_SERVER_PORT: %v\n", err)
+			return 1
+		}
 		if err := os.Setenv("BEADS_DOLT_PORT", extPortStr); err != nil {
 			fmt.Fprintf(os.Stderr, "FATAL: set BEADS_DOLT_PORT: %v\n", err)
 			return 1
@@ -68,6 +78,19 @@ func testMainInner(m *testing.M) int {
 		defer testutil.TerminateDoltContainer()
 		testServerPort = testutil.DoltContainerPortInt()
 
+		// Pin both env vars to the testcontainer port so applyConfigDefaults
+		// resolves to the container regardless of what BEADS_DOLT_SERVER_PORT
+		// the surrounding shell already exports (see external-port branch above).
+		containerPort := strconv.Itoa(testServerPort)
+		if err := os.Setenv("BEADS_DOLT_SERVER_PORT", containerPort); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: set BEADS_DOLT_SERVER_PORT: %v\n", err)
+			return 1
+		}
+		if err := os.Setenv("BEADS_DOLT_PORT", containerPort); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: set BEADS_DOLT_PORT: %v\n", err)
+			return 1
+		}
+
 		// Set up shared database for branch-per-test isolation
 		testSharedDB = "dolt_pkg_shared"
 		db, err := testutil.SetupSharedTestDB(testServerPort, testSharedDB)
@@ -89,6 +112,7 @@ func testMainInner(m *testing.M) int {
 	code := m.Run()
 
 	testServerPort = 0
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
 	os.Unsetenv("BEADS_DOLT_PORT")
 	os.Unsetenv("BEADS_TEST_MODE")
 	return code
