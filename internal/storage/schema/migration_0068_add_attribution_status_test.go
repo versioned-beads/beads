@@ -27,20 +27,6 @@ import (
 const migration0068Up = "0068_add_attribution_status.up.sql"
 const migration0068Down = "0068_add_attribution_status.down.sql"
 
-// TestLatestVersionIncludesMigration0068 pins the real next free slot this
-// phase claims, superseding 0067's own version of this test (LatestVersion()
-// moved from 67 to 68 the moment this migration file was added). Deliberately
-// a hardcoded literal for the same reason 0067's was: LatestVersion()
-// drifting to 68 for the wrong reason (an unrelated migration landing first)
-// should still be caught by this test failing to explain why 68 is
-// attribution-status-shaped, which the CLI test below checks.
-func TestLatestVersionIncludesMigration0068(t *testing.T) {
-	const want = 68
-	if got := LatestVersion(); got != want {
-		t.Fatalf("LatestVersion() = %d, want %d (issue_versions.attribution_status migration slot claimed by be-hs42e.3)", got, want)
-	}
-}
-
 // TestMigration0068AddsAttributionStatus is a pure-Go, DB-independent check
 // of the frozen migration bytes themselves — it runs even where no `dolt`
 // binary is available.
@@ -166,5 +152,21 @@ func TestMigration0068AddsAttributionStatusThroughDoltCLI(t *testing.T) {
 	rows = queryDoltCSV(t, dir, `SELECT durable_state FROM issue_versions WHERE issue_id = 'iv-2'`)
 	if len(rows) != 1 || rows[0]["durable_state"] != verbatim {
 		t.Fatalf("durable_state round-trip changed the bytes post-migration: got %v, want %q", rows, verbatim)
+	}
+}
+
+// TestLatestVersionIncludesMigration0068 restores the pin 0069 superseded:
+// be-80f4a.1 tears down R16's per-record CAS (migration
+// 0069_add_expected_revision_records — architect ruling on be-80f4a found it
+// departs from gastownhall/beads#5898 design) as a design-departure rework,
+// dropping the migration file entirely rather than adding a reversal
+// migration, since it never shipped past this unmerged branch lineage
+// (origin/main has no 0069 file at the point this branch forked). 0068 is
+// the real latest slot again until Part B (be-80f4a.2, blocked on
+// gastownhall/beads#6358) claims a new one.
+func TestLatestVersionIncludesMigration0068(t *testing.T) {
+	const want = 68
+	if got := LatestVersion(); got != want {
+		t.Fatalf("LatestVersion() = %d, want %d (expected_revision_records migration removed by be-80f4a.1)", got, want)
 	}
 }
