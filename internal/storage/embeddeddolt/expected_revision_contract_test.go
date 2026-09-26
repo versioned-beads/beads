@@ -3,31 +3,33 @@
 package embeddeddolt_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/steveyegge/beads/backend/conformance"
 )
 
-// TestExpectedRevisionContract wires this leg into the R16/R17
-// expected-revision contract. Every hook is nil (architecture §12's Phase 0
-// default), so each case below skips by name; this file exists so
-// TestEveryLegWiresEveryRoleContract counts this leg, and so the cases
-// start running for real the moment this leg grows a real
-// CompareAndSetVersion (be-80f4a.2 / gastownhall/beads#6358).
+// TestExpectedRevisionContract runs the R16/R17 expected-revision contract
+// against the embedded-Dolt-backed store, which reaches
+// internal/storage/issueops.CompareAndSetVersionInTx through this leg's own
+// issue-operation transaction (EmbeddedDoltStore.CompareAndSetVersion) or a
+// read-only connection (EmbeddedDoltStore.CurrentVersion) — see
+// internal/storage/embeddeddolt/expected_revision_cas.go.
 //
-// This leg previously wired every hook to an honest "not implemented" stub
-// (be-x5jqd.1) instead of leaving them nil, so each case ran for real and
-// failed for that documented reason rather than skipping. That premise —
-// that be-x5jqd.3 would give this leg its CompareAndSetVersion — went
-// stale once review moved the real implementation to be-80f4a.2 /
-// gastownhall/beads#6358 instead; a stub whose failure message blames a
-// bead that will never land it is worse than an honest skip, so this file
-// reverts to nil hooks (gastownhall/beads#6664, bee-ghosttrack review
-// 5268699223).
+// All three legs run that one shared body, so this is not an independent
+// vote on the design — it is the check on THIS leg's wrapper and this file's
+// own "_attribution"/error-sentinel translation. See the contract file's
+// header comment.
+// CompareAndSetVersion/CurrentVersion/MutateOutsideExpectedRevision are left
+// nil: be-80f4a.1 removes R16's per-record CAS backing (architect-ruled
+// design departure from gastownhall/beads#5898), so this leg has nothing to
+// wire pending Part B. See FixtureIsAnHonestSkipPendingPartB below.
 func TestExpectedRevisionContract(t *testing.T) {
-	ctx := context.Background()
-	fixture := conformance.ExpectedRevisionFixture{IssuePrefix: "erev"}
+	skipUnlessEmbeddedDolt(t)
+	_ = newTestEnv(t, "erev")
+	ctx := t.Context()
+	fixture := conformance.ExpectedRevisionFixture{
+		IssuePrefix: "erev",
+	}
 
 	t.Run("AcceptsAWriteNamingTheCurrentVersion", func(t *testing.T) {
 		conformance.RunExpectedRevisionAcceptsAWriteNamingTheCurrentVersion(t, ctx, fixture)
@@ -58,5 +60,16 @@ func TestExpectedRevisionContract(t *testing.T) {
 	})
 	t.Run("RefusalNeverSilentlyPicksAWinner", func(t *testing.T) {
 		conformance.RunRefusalNeverSilentlyPicksAWinner(t, ctx, fixture)
+	})
+	t.Run("FixtureIsAnHonestSkipPendingPartB", func(t *testing.T) {
+		if fixture.CompareAndSetVersion != nil {
+			t.Error("CompareAndSetVersion is wired, want nil: be-80f4a.1 removes R16's per-record CAS backing (architect-ruled design departure from gastownhall/beads#5898) and this leg's fixture must honestly skip pending Part B, not fake green")
+		}
+		if fixture.CurrentVersion != nil {
+			t.Error("CurrentVersion is wired, want nil: see CompareAndSetVersion above")
+		}
+		if fixture.MutateOutsideExpectedRevision != nil {
+			t.Error("MutateOutsideExpectedRevision is wired, want nil: see CompareAndSetVersion above")
+		}
 	})
 }
