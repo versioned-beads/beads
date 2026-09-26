@@ -3,21 +3,33 @@
 package embeddeddolt_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/steveyegge/beads/backend/conformance"
 )
 
-// TestExpectedRevisionContract wires this leg into the R16/R17
-// expected-revision contract. Phase 0 leaves every hook nil in every
-// backend's fixture kit (architecture §12), so each case below skips by
-// name; this file exists so TestEveryLegWiresEveryRoleContract counts this
-// leg, and so the cases start running for real the moment this leg's fixture
-// kit grows a non-nil hook.
+// TestExpectedRevisionContract runs the R16/R17 expected-revision contract
+// against the embedded-Dolt-backed store, which reaches
+// internal/storage/issueops.CompareAndSetVersionInTx through this leg's own
+// issue-operation transaction (EmbeddedDoltStore.CompareAndSetVersion) or a
+// read-only connection (EmbeddedDoltStore.CurrentVersion) — see
+// internal/storage/embeddeddolt/expected_revision_cas.go.
+//
+// All three legs run that one shared body, so this is not an independent
+// vote on the design — it is the check on THIS leg's wrapper and this file's
+// own "_attribution"/error-sentinel translation. See the contract file's
+// header comment.
+// CompareAndSetVersion/CurrentVersion/MutateOutsideExpectedRevision are left
+// nil: be-80f4a.1 removes R16's per-record CAS backing (architect-ruled
+// design departure from gastownhall/beads#5898), so this leg has nothing to
+// wire pending Part B. See FixtureIsAnHonestSkipPendingPartB below.
 func TestExpectedRevisionContract(t *testing.T) {
-	ctx := context.Background()
-	fixture := conformance.ExpectedRevisionFixture{IssuePrefix: "erev"}
+	skipUnlessEmbeddedDolt(t)
+	_ = newTestEnv(t, "erev")
+	ctx := t.Context()
+	fixture := conformance.ExpectedRevisionFixture{
+		IssuePrefix: "erev",
+	}
 
 	t.Run("AcceptsAWriteNamingTheCurrentVersion", func(t *testing.T) {
 		conformance.RunExpectedRevisionAcceptsAWriteNamingTheCurrentVersion(t, ctx, fixture)
@@ -48,5 +60,16 @@ func TestExpectedRevisionContract(t *testing.T) {
 	})
 	t.Run("RefusalNeverSilentlyPicksAWinner", func(t *testing.T) {
 		conformance.RunRefusalNeverSilentlyPicksAWinner(t, ctx, fixture)
+	})
+	t.Run("FixtureIsAnHonestSkipPendingPartB", func(t *testing.T) {
+		if fixture.CompareAndSetVersion != nil {
+			t.Error("CompareAndSetVersion is wired, want nil: be-80f4a.1 removes R16's per-record CAS backing (architect-ruled design departure from gastownhall/beads#5898) and this leg's fixture must honestly skip pending Part B, not fake green")
+		}
+		if fixture.CurrentVersion != nil {
+			t.Error("CurrentVersion is wired, want nil: see CompareAndSetVersion above")
+		}
+		if fixture.MutateOutsideExpectedRevision != nil {
+			t.Error("MutateOutsideExpectedRevision is wired, want nil: see CompareAndSetVersion above")
+		}
 	})
 }

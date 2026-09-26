@@ -5,7 +5,7 @@ name: Conformance
 
 on:
   pull_request:
-    branches: [ main, 'release/**' ]
+    branches: [ main, 'release/**', integration ]
   merge_group:
 
 concurrency:
