@@ -147,7 +147,16 @@ func TestEveryRawTxVersionScopeIsScopedOrExempt(t *testing.T) {
 // this second arm exists rather than being folded into the first.
 var txMintingWrappers = []string{
 	"DoltStore.runDoltTransaction",
-	"DoltStore.withWriteTx",
+	// commitWriteTx, not withWriteTx. withWriteTx used to open the
+	// transaction itself; upstream split the body out so the post-commit
+	// blocked-recheck could run outside any retry loop around fn, leaving
+	// withWriteTx a thin delegator that calls no BeginTx. The scoping moved
+	// with the transaction and is intact -- commitWriteTx binds the journal
+	// scope, this one, and the blocked-recheck scope together -- so naming
+	// the delegator here only made the guard fail while the code was right.
+	// Name the function that actually owns the transaction, or this guard
+	// covers a wrapper that cannot mint anything.
+	"DoltStore.commitWriteTx",
 }
 
 // TestTxMintingWrappersScopeVersionedHistory covers the half
