@@ -128,6 +128,17 @@ var funcNameExemptions = map[string]string{
 	// Reminting here would be pointless content-wise and would let a stale
 	// ExpectedVersion CAS reject a row it should still recognize.
 	"resolveOneConflictRow": "whole-row `theirs` adoption: the adopted row_lock already vouches for the (identical) adopted content",
+
+	// rekeyDependencyTargetInTx (dependencies.go) always runs with table bound
+	// to "dependencies" or "wisp_dependencies" (see UpdateWispIDInDependenciesInTx
+	// / UpdateIssueIDInDependenciesInTx, its only callers): its UPDATE %s SET
+	// id = ? WHERE id = ? re-derives the edge row's own surrogate primary key
+	// after a split target column changes, and never touches an issues/wisps
+	// row. The bare `id = ?` shape carries no distinguishing marker of its
+	// own — the column name collides with issues/wisps' own primary key by
+	// coincidence — which is why this needs a name-based exemption rather
+	// than a text marker.
+	"rekeyDependencyTargetInTx": "edge-table (dependencies/wisp_dependencies) surrogate-id rekey, never an issues/wisps row",
 }
 
 // TestAllIssueRowWritesStampRowLock is the source-completeness guard for the
