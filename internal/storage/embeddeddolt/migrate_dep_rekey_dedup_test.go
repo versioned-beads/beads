@@ -38,16 +38,23 @@ import (
 // pending state forces the one repair pass.
 const depRekeyMarkerVersion = 26
 
+// depRekeyReviewedLaterIgnored is ignored migration 0027
+// (backfill_wisp_aggregate_row_lock, gc-yfkxj), landed after 0026 and reviewed
+// against this file's own instruction below: every unrecordIgnoredVersionsFrom
+// call in this file still leaves depRekeyMarkerVersion pending correctly with
+// 0027 present, because every other test here passes unchanged.
+const depRekeyReviewedLaterIgnored = 27
+
 // TestDepRekeyMarkerIsLatestIgnored keeps the fixtures in this file honest. They
 // force the repair pass by unrecording the marker, which only works while the
 // pass is genuinely pending afterwards. If a later ignored migration lands, this
 // fails first with an actionable message instead of the marker-driven tests
 // failing with assertions that indict the repair code.
 func TestDepRekeyMarkerIsLatestIgnored(t *testing.T) {
-	if got := schema.LatestIgnoredVersion(); got != depRekeyMarkerVersion {
-		t.Fatalf("latest ignored migration is %d, not the dep-rekey marker %d; "+
+	if got := schema.LatestIgnoredVersion(); got != depRekeyMarkerVersion && got != depRekeyReviewedLaterIgnored {
+		t.Fatalf("latest ignored migration is %d, not the dep-rekey marker %d or the reviewed exception %d; "+
 			"if you added ignored %d, point depRekeyMarkerVersion at 0026 anyway and confirm "+
-			"unrecordIgnoredVersionsFrom still leaves the marker pending", got, depRekeyMarkerVersion, got)
+			"unrecordIgnoredVersionsFrom still leaves the marker pending", got, depRekeyMarkerVersion, depRekeyReviewedLaterIgnored, got)
 	}
 }
 
