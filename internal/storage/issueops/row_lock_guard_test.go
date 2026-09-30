@@ -142,7 +142,7 @@ var funcNameExemptions = map[string]string{
 
 	// recordVersionAtInTx (version_history.go) is the shared body behind both
 	// RecordVersionInTx and its R7.1 test-support twin RecordVersionAtInTx
-	// (gastownhall/beads#5898 rev 9, gastownhall/beads#6136, be-x5jqd.5).
+	// (gastownhall/beads#5898 rev 9, gastownhall/beads#6136).
 	// RecordVersionInTx's production callers run it immediately after the
 	// mutation it is snapshotting — create.go/update.go's own writes, or
 	// domain/db's Insert/Update — and those callers have already minted a

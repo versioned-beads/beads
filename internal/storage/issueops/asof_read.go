@@ -12,7 +12,7 @@ import (
 )
 
 // This file implements R7.1 as-of read (gastownhall/beads#5898 revision 9,
-// gastownhall/beads#6136, this slice: be-x5jqd.5 / backend/conformance/
+// gastownhall/beads#6136; conformance suite: backend/conformance/
 // versioned_read_contract.go): given an instant T or a version address, it
 // returns one issue's durable state as of that point -- the latest version
 // accepted at or before T, with everything later excluded -- marking the
@@ -223,8 +223,17 @@ func AsOfReadInTx(ctx context.Context, tx DBTX, storeID, issueID string, selecto
 	}
 
 	if removedAt.Valid {
+		// removed_restriction is a free VARCHAR written by whatever produced the
+		// row, so only the values this file's vocabulary names are handed back.
+		// NULL, "", "live" (never persisted: Live is the absence of removed_at)
+		// and any other string say nothing about why the row was removed, and
+		// are reported as unknown rather than passed on as if they were an
+		// answer.
 		restriction := AsOfRestriction(removedRestriction.String)
-		if restriction == "" {
+		switch restriction {
+		case AsOfRestrictionGoneRetention, AsOfRestrictionGoneErasure,
+			AsOfRestrictionGoneReorganization, AsOfRestrictionUnknown:
+		default:
 			restriction = AsOfRestrictionUnknown
 		}
 		return AsOfReadResult{

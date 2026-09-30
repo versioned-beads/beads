@@ -70,7 +70,7 @@ func TestCanonicalDurableStateIntegerBoundary(t *testing.T) {
 	}
 }
 
-// Non-integer literals must keep working: they are not exactly representable
+// Ordinary fractions must keep working: they are not exactly representable
 // either, but ES6 shortest-round-trip returns them to the same binary64
 // value, so they neither round to a different value nor collide.
 //
@@ -86,11 +86,11 @@ func TestCanonicalDurableStateStillAcceptsOrdinaryDecimals(t *testing.T) {
 	}
 }
 
-// 1e300 is IsInt()==true (it denotes the integer 10^300) at a magnitude
-// vastly past 2^53-1, and is subject to the same collision defect this gate
+// 1e300 denotes the integer 10^300 at a magnitude vastly past 2^53-1, and
+// is subject to the same collision defect this gate
 // exists to close -- binary64 spacing near 10^300 is roughly 2^248, so a wide
 // range of distinct large integers near 10^300 collapse onto that one
-// double, same failure mode as the 2^53 boundary, larger window. The mayor's
+// double, same failure mode as the 2^53 boundary, larger window. The
 // spec for this predicate is "value not form, any spelling, no exceptions"
 // (see version_history.go's refuseUnrepresentableIntegers doc comment),
 // applied literally that refuses 1e300 -- but two pre-gate tests assumed it
@@ -98,7 +98,7 @@ func TestCanonicalDurableStateStillAcceptsOrdinaryDecimals(t *testing.T) {
 // (see version_history_durable_state_test.go's "huge" fixture, moved off
 // 1E300 for the same reason).
 //
-// RESOLVED (mayor, gm-wisp-3f2w8, be-wdlod): REFUSE 1e300. The rule applies
+// RESOLVED: REFUSE 1e300. The rule applies
 // literally, with no notation carve-out -- admitting a spelling this large
 // while refusing 9007199254740993 would be indefensible, since the collision
 // window near 10^300 (binary64 spacing ~2^248) is vastly larger than the one
@@ -126,9 +126,8 @@ func TestCanonicalDurableStateRefusesHugeExponentInteger(t *testing.T) {
 // exact defect class this gate exists to close, just reachable through
 // spelling instead of magnitude.
 //
-// The predicate under test must inspect the VALUE (e.g. via math/big,
-// exactly, with no float64 in the decision path -- float64 is the very
-// thing being tested for) rather than the literal's spelling, so it must
+// The predicate under test must inspect the VALUE (the binary64 nearest
+// to the literal) rather than the literal's spelling, so it must
 // refuse and accept the same values regardless of which of the three JSON
 // number forms (integer, decimal, exponent) carries them. This is pinned
 // here for the bound itself; ordinary small decimals are covered separately

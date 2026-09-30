@@ -166,6 +166,7 @@ go_test(
     deps = [
         "//internal/debug",
         "//internal/storage/depid",
+        "//internal/storage/issueops",
         "//internal/storage/rowid",
         "//internal/testutil",
         "@com_github_data_dog_go_sqlmock//:go-sqlmock",

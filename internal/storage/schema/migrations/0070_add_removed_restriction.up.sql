@@ -1,5 +1,5 @@
 -- Migration 0070: R7.1 as-of read (gastownhall/beads#5898 revision 9,
--- gastownhall/beads#6136), this slice: be-x5jqd.5 / backend/conformance/
+-- gastownhall/beads#6136); conformance suite: backend/conformance/
 -- versioned_read_contract.go.
 --
 -- issue_versions already carries removed_at DATETIME and removed_reason
@@ -10,8 +10,8 @@
 -- substitute a neighboring/surviving/current version).
 --
 -- removed_restriction VARCHAR(30) is the one column this migration adds: the
--- categorical restriction (gone-retention / gone-erasure /
--- gone-reorganization / unknown) that removed_at's presence alone cannot
+-- categorical restriction (gone_retention / gone_erasure /
+-- gone_reorganization / unknown) that removed_at's presence alone cannot
 -- carry. Nullable and NULL for every existing row -- Live is the absence of
 -- a value, never a stored one -- and populated only alongside removed_at,
 -- never independently. 30 chars comfortably fits the longest local
