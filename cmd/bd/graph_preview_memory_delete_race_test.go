@@ -29,7 +29,7 @@ type graphDeleteRaceReceipt struct {
 // Do not accept infrastructure failures as a losing mutation.
 func graphDeleteRacePair(t *testing.T, bd, work, home string, args [2][]string) [2]graphDeleteRaceReceipt {
 	t.Helper()
-	return graphMutationRacePair(t, bd, work, home, args, map[string]int{"revision_conflict": 4, "gone": 3, "deletion_policy_unresolved": 5})
+	return graphMutationRacePair(t, bd, work, home, args, map[string]int{"revision_conflict": 4, "gone": 3, "constraint_violation": 4})
 }
 
 // Each caller supplies only its admitted domain refusals. Keep deletion's
@@ -189,7 +189,7 @@ func TestGraphPreviewMemoryDeleteConcurrentProcesses(t *testing.T) {
 			}
 			// Narrow accepted losers by operation, not merely the generic set of
 			// graph errors. In particular, outcome_unknown is not success proof.
-			if !deleteWon && results[0].code != "revision_conflict" && !(other == "incoming-link" && results[0].code == "deletion_policy_unresolved") {
+			if !deleteWon && results[0].code != "revision_conflict" && !(other == "incoming-link" && results[0].code == "constraint_violation") {
 				t.Fatalf("unexpected deletion refusal: %s", results[0].code)
 			}
 			if !otherWon && results[1].code != "revision_conflict" && results[1].code != "gone" {

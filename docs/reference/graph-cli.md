@@ -151,6 +151,8 @@ previews the result without changing storage; `--force` applies it. `bd forget
 ID` applies the same deletion directly. Applying either command requires an
 explicit write choice, shown here with `--unconditional`. Any live incoming,
 outgoing or self-Link makes deletion refuse; `--force` does not cascade.
+The refusal names the first blocking Link ID and the total number of incident
+Links; unlink them explicitly before retrying with a fresh revision.
 Issue deletion is not available in this graph preview.
 
 ```sh
@@ -164,6 +166,26 @@ bd forget other-scratch --unconditional
 
 Deletion removes current Memory state but reserves its ID and retains prior
 snapshots. It does not create a deletion version or promise erasure or restore.
+
+Use `bd defer ID...` to set Issues aside and `bd undefer ID...` to return
+deferred Issues to open. An undated defer stays in the icebox until undeferred.
+`--until` accepts the same date and relative-time forms as ordinary `bd`;
+the next `bd ready` after that time wakes the Issue, records a new version,
+and clears its defer date. `--reason` appends a line to the Issue's notes.
+Assigned Issues retain their assignee through defer and undefer. Neither
+command requires a revision flag, but `--if-revision` checks the observed
+revision for a single Issue. A repeated dateless defer or undefer is a no-op
+when no date or reason changes. `bd undefer` also clears a stale defer date
+without changing a non-deferred status.
+
+```sh
+bd defer work --until tomorrow --reason 'Waiting on review'
+bd ready                       # Wakes work once its defer date has passed
+bd undefer work                 # Or restore it explicitly
+bd defer work another-work      # Set multiple Issues aside indefinitely
+bd show work --json
+bd undefer work --if-revision REVISION_FROM_SHOW
+```
 
 ## Create, inspect, edit and remove Links
 

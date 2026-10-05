@@ -128,3 +128,99 @@ func TestGraphPreviewIssueAuthoringWorkflow(t *testing.T) {
 		})
 	}
 }
+
+func TestGraphPreviewIssueDatelessDeferralWorkflow(t *testing.T) {
+	bd := buildBDUnderTest(t)
+	for _, engine := range []string{"embedded", "server"} {
+		t.Run(engine, func(t *testing.T) {
+			work, home := t.TempDir(), t.TempDir()
+			args := []string{"init", "--graph-mode", "link", "--scope-url", "https://example.invalid/deferral/", "--skip-hooks", "--skip-agents", "--non-interactive"}
+			if engine == "server" {
+				port := os.Getenv("BEADS_GRAPH_TEST_SERVER_PORT")
+				if port == "" {
+					t.Skip("set BEADS_GRAPH_TEST_SERVER_PORT for ordinary shared-server deferral qualification")
+				}
+				args = append(args, "--server", "--external", "--server-host", "127.0.0.1", "--server-port", port, "--server-user", "root")
+			}
+			call := func(args ...string) string {
+				t.Helper()
+				return graphPolicyCLI(t, bd, work, home, nil, "", append(args, "--json")...)
+			}
+			refuse := func(code string, args ...string) {
+				t.Helper()
+				graphPolicyCLI(t, bd, work, home, nil, code, append(args, "--json")...)
+			}
+			call(args...)
+			original := graphMixedResult[graphstore.IssueRecord](t, call("create", "Work", "--id", "work"))
+			claimed := graphMixedResult[graphstore.IssueRecord](t, call("create", "Claimed", "--id", "claimed"))
+			claimedState := graphMixedResult[graphstore.IssueMutationResult](t, call("update", "claimed", "--claim", "--actor", "operator"))
+			if !claimedState.Changed {
+				t.Fatal("claim setup did not change Issue")
+			}
+			claimedDeferred := graphMixedResult[graphstore.IssueMutationResult](t, call("defer", "claimed"))
+			if !claimedDeferred.Changed || claimedDeferred.Issue.Properties.Assignee != "operator" || claimedDeferred.Issue.Version == claimed.Version {
+				t.Fatalf("claimed deferral lost assignment: %+v", claimedDeferred)
+			}
+			claimedOpened := graphMixedResult[graphstore.IssueMutationResult](t, call("undefer", "claimed"))
+			if !claimedOpened.Changed || claimedOpened.Issue.Properties.Assignee != "operator" {
+				t.Fatalf("claimed undefer lost assignment: %+v", claimedOpened)
+			}
+			memory := call("remember", "Context", "--id", "context", "--title", "Context")
+			refuse("invalid_selector", "defer", original.ID, "--if-revision", original.Revision, "context")
+			refuse("invalid_properties", "defer", "context", "--unconditional")
+			if call("show", original.ID) == memory {
+				t.Fatal("Issue and Memory identity collided")
+			}
+			deferred := graphMixedResult[graphstore.IssueMutationResult](t, call("defer", "work", "--if-revision", original.Revision))
+			if !deferred.Changed || string(deferred.Issue.Properties.Status) != "deferred" || deferred.Issue.Properties.DeferUntil != nil || deferred.Issue.Version == original.Version {
+				t.Fatalf("defer result: %+v", deferred)
+			}
+			refuse("revision_conflict", "defer", "work", "--if-revision", original.Revision)
+			refuse("invalid_selector", "undefer", "work", "--if-revision", "")
+			for _, item := range graphMixedResult[[]graphstore.IssueRecord](t, call("ready")) {
+				if item.ID == original.ID {
+					t.Fatalf("deferred Issue remained ready: %+v", item)
+				}
+			}
+			noop := graphMixedResult[graphstore.IssueMutationResult](t, call("defer", "work", "--if-revision", deferred.Issue.Revision))
+			if noop.Changed || !reflect.DeepEqual(noop.Issue, deferred.Issue) {
+				t.Fatalf("repeat defer changed Issue: %+v", noop)
+			}
+			opened := graphMixedResult[graphstore.IssueMutationResult](t, call("undefer", "work", "--if-revision", deferred.Issue.Revision))
+			if !opened.Changed || string(opened.Issue.Properties.Status) != "open" || opened.Issue.Version == deferred.Issue.Version {
+				t.Fatalf("undefer result: %+v", opened)
+			}
+			foundWork := false
+			for _, item := range graphMixedResult[[]graphstore.IssueRecord](t, call("ready")) {
+				foundWork = foundWork || item.ID == original.ID
+			}
+			if !foundWork {
+				t.Fatal("undeferred Issue remained hidden")
+			}
+			snoozed := graphMixedResult[graphstore.IssueMutationResult](t, call("defer", "work", "--until", "2000-01-01", "--reason", "waiting on review"))
+			if !snoozed.Changed || snoozed.Issue.Properties.DeferUntil == nil || snoozed.Issue.Properties.Notes != "waiting on review" {
+				t.Fatalf("dated defer with reason: %+v", snoozed)
+			}
+			woke := graphMixedResult[[]graphstore.IssueRecord](t, call("ready"))
+			foundWork = false
+			for _, item := range woke {
+				foundWork = foundWork || (item.ID == original.ID && item.Properties.DeferUntil == nil && item.Version != snoozed.Issue.Version)
+			}
+			if !foundWork {
+				t.Fatalf("dated defer did not wake: %+v", woke)
+			}
+			other := graphMixedResult[graphstore.IssueRecord](t, call("create", "Other", "--id", "other"))
+			batch := graphMixedResult[[]graphstore.IssueMutationResult](t, call("defer", "work", other.ID))
+			if len(batch) != 2 || !batch[0].Changed || !batch[1].Changed {
+				t.Fatalf("batch defer: %+v", batch)
+			}
+			batch = graphMixedResult[[]graphstore.IssueMutationResult](t, call("undefer", "work", other.ID))
+			if len(batch) != 2 || !batch[0].Changed || !batch[1].Changed {
+				t.Fatalf("batch undefer: %+v", batch)
+			}
+			if call("show", "context") != memory {
+				t.Fatal("deferral changed unrelated Memory")
+			}
+		})
+	}
+}
