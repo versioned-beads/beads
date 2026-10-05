@@ -102,7 +102,10 @@ func TestGraphPreviewMemoryDeleteWorkflow(t *testing.T) {
 			plan := graphMixedResult[graphstore.Record](t, call("remember", "Plan", "--id", "beads/plan", "--title", "Plan"))
 			other := call("remember", "Context", "--id", "beads/other", "--title", "Context")
 			issue := call("create", "Keep Issue", "--id", "beads/work")
-			refuse("capability_unavailable", "delete", "beads/work")
+			issuePreview := graphMixedResult[graphstore.IssueDeleteResult](t, call("delete", "beads/work"))
+			if !issuePreview.Preview || issuePreview.Deleted || issuePreview.Issue.ID != scope+"beads/work" {
+				t.Fatal("Issue deletion preview did not preserve live Issue")
+			}
 			refuse("capability_unavailable", "forget", "beads/work", "--unconditional")
 			related := scope + "types/preview-related-v2"
 			call("link", "beads/plan", "beads/other", "--id", "links/outgoing", "--resource-type", related, "--if-source-revision", plan.Revision)
@@ -111,9 +114,9 @@ func TestGraphPreviewMemoryDeleteWorkflow(t *testing.T) {
 				before := call("show", "beads/plan")
 				linkBefore := call("show", path)
 				current := graphMixedResult[graphstore.Record](t, before)
-				refuse("deletion_policy_unresolved", "delete", "beads/plan")
-				refuse("deletion_policy_unresolved", "delete", "beads/plan", "--force", "--if-revision", current.Revision)
-				refuse("deletion_policy_unresolved", "forget", "beads/plan", "--unconditional")
+				refuse("constraint_violation", "delete", "beads/plan")
+				refuse("constraint_violation", "delete", "beads/plan", "--force", "--if-revision", current.Revision)
+				refuse("constraint_violation", "forget", "beads/plan", "--unconditional")
 				if call("show", "beads/plan") != before || call("show", path) != linkBefore || call("show", "beads/other") != other || call("show", "beads/work") != issue {
 					t.Fatal("incident-Link refusal changed Memory, Link or another endpoint")
 				}

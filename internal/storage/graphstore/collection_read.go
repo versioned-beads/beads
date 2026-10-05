@@ -137,7 +137,7 @@ func (s *Store) checkCollectionMappingsInTx(ctx context.Context, tx *sql.Tx) err
 	for _, query := range []string{
 		`SELECT COUNT(*) FROM graph_preview_payloads p LEFT JOIN graph_preview_catalog c ON c.path=p.path WHERE c.path IS NULL OR c.resource_kind<>'bead' OR c.backing<>'generic' OR c.allocation_state<>'live'`,
 		`SELECT COUNT(*) FROM issues i LEFT JOIN graph_preview_catalog c ON c.backing='issue' AND c.backing_key=i.id WHERE c.path IS NULL OR c.resource_kind<>'bead' OR c.allocation_state<>'live'`,
-		`SELECT COUNT(*) FROM graph_preview_catalog WHERE allocation_state='deleted' AND (backing_key IS NOT NULL OR NOT ((resource_kind='link' AND backing IN ('informational','dependency')) OR (resource_kind='bead' AND backing='generic')))`,
+		`SELECT COUNT(*) FROM graph_preview_catalog WHERE allocation_state='deleted' AND NOT ((resource_kind='link' AND backing IN ('informational','dependency') AND backing_key IS NULL) OR (resource_kind='bead' AND backing='generic' AND backing_key IS NULL) OR (resource_kind='bead' AND backing='issue' AND backing_key IS NOT NULL))`,
 	} {
 		var invalid int
 		if err := tx.QueryRowContext(ctx, query).Scan(&invalid); err != nil {
@@ -165,6 +165,27 @@ func (s *Store) checkCollectionMappingsInTx(ctx context.Context, tx *sql.Tx) err
 	}
 	for _, path := range paths {
 		if _, err := s.deletedMemoryInTx(ctx, tx, path); err != nil {
+			return err
+		}
+	}
+	issueRows, err := tx.QueryContext(ctx, `SELECT path FROM graph_preview_catalog WHERE allocation_state='deleted' AND backing='issue'`)
+	if err != nil {
+		return err
+	}
+	issuePaths := []string{}
+	for issueRows.Next() {
+		var path string
+		if err := issueRows.Scan(&path); err != nil {
+			_ = issueRows.Close()
+			return err
+		}
+		issuePaths = append(issuePaths, path)
+	}
+	if err := errors.Join(issueRows.Err(), issueRows.Close()); err != nil {
+		return err
+	}
+	for _, path := range issuePaths {
+		if err := s.validateDeletedIssueInTx(ctx, tx, path); err != nil {
 			return err
 		}
 	}

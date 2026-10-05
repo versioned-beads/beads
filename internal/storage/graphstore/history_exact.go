@@ -94,6 +94,10 @@ func (s *Store) readVersionInTx(ctx context.Context, tx *sql.Tx, path, version s
 			if version == head {
 				return memory, nil
 			}
+		} else if backing == "issue" {
+			if err := s.validDeletedIssueAllocationInTx(ctx, tx, path, kind, typ.String, head, state, backing, key); err != nil {
+				return nil, err
+			}
 		} else if !s.validDeletedLinkAllocation(kind, typ.String, backing, key) {
 			return nil, fmt.Errorf("%w: unsupported deleted subject", ErrInvalidStore)
 		}

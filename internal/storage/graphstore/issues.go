@@ -200,10 +200,19 @@ func (s *Store) showIssueInTx(ctx context.Context, tx *sql.Tx, path string) (Iss
 	if err != nil {
 		return IssueRecord{}, err
 	}
+	if state == "deleted" {
+		if err := s.validateDeletedIssueInTx(ctx, tx, path); err != nil {
+			return IssueRecord{}, err
+		}
+		return IssueRecord{}, ErrGone
+	}
 	if kind != "bead" || typ != IssueTypeURL(s.options.Binding.ScopeURL) || !authorityID.MatchString(revision) || state != "live" || backing != "issue" || issueID == "" {
 		return IssueRecord{}, fmt.Errorf("%w: invalid Issue allocation", ErrInvalidStore)
 	}
-	issue, err := issueops.HydrateIssueOperationResult(ctx, tx, issueID, true)
+	// Comments are a separate native Issue feed, outside durable_state and its
+	// retained graph version. Including them here would make a new comment look
+	// like an unversioned mutation of the Issue snapshot.
+	issue, err := issueops.HydrateIssueOperationResult(ctx, tx, issueID, false)
 	if err != nil {
 		return IssueRecord{}, fmt.Errorf("%w: Issue backing: %v", ErrInvalidStore, err)
 	}
@@ -221,7 +230,7 @@ func (s *Store) showIssueInTx(ctx context.Context, tx *sql.Tx, path string) (Iss
 	if err != nil {
 		return IssueRecord{}, err
 	}
-	if current != ordinal || ordinal < 1 || !bytes.Equal(snapshot, canonical) || issueops.IsWisp(issue) || len(issue.Comments) > 0 || issue.ID != issueID ||
+	if current != ordinal || ordinal < 1 || !bytes.Equal(snapshot, canonical) || issueops.IsWisp(issue) || issue.ID != issueID ||
 		(actor == "" && status != "unknown") || (actor != "" && status != "claimed") {
 		return IssueRecord{}, fmt.Errorf("%w: Issue current/retained state differs or exceeds preview", ErrInvalidStore)
 	}

@@ -40,7 +40,8 @@ const (
 // it — a deleted Link's final retained version, which is its private deletion
 // marker. Nothing is filtered out on that account: a removal is information the
 // caller renders, so this flag tells the caller which row to render as a removal
-// and to leave out of any "cite this token" guidance.
+// and to leave out of any "cite this token" guidance. Deleted Memory and
+// Issue allocations preserve their final live version without a marker.
 //
 // The JSON member names are fixed. Ordinal is deliberately not spelled
 // "revision": graph records already use revision for the opaque token, and a
@@ -114,7 +115,8 @@ func shippedVersionBounds() versionBounds {
 // retained version is its private deletion marker, which ReadVersion refuses
 // with ErrGone. That row is flagged Removed rather than withheld, because a
 // removal is part of the history. A deleted Memory's final live head is a real
-// retained Resource (deletedMemoryInTx reads it) and is not flagged.
+// retained Resource (deletedMemoryInTx reads it) and is not flagged. The same
+// holds for a deleted Issue's final native retained snapshot.
 func (s *Store) Versions(ctx context.Context, path string) (ResourceKind, []VersionRow, error) {
 	return s.versionsWithin(ctx, path, shippedVersionBounds())
 }
@@ -203,6 +205,10 @@ func (s *Store) versionsInTx(ctx context.Context, tx *sql.Tx, path string, bound
 	if state == "deleted" {
 		if backing == "generic" {
 			if err := s.validDeletedMemoryAllocationInTx(ctx, tx, path, kind, typ.String, head, state, backing, key); err != nil {
+				return "", nil, err
+			}
+		} else if backing == "issue" {
+			if err := s.validDeletedIssueAllocationInTx(ctx, tx, path, kind, typ.String, head, state, backing, key); err != nil {
 				return "", nil, err
 			}
 		} else if !s.validDeletedLinkAllocation(kind, typ.String, backing, key) {
@@ -308,9 +314,8 @@ func issueVersionsInTx(ctx context.Context, tx *sql.Tx, path, backingKey, head s
 		// an empty Actor with attribution_status explaining it, never an error.
 		row.Actor, row.Attribution = actor.String, status.String
 		row.ChangeAt = row.ChangeAt.UTC()
-		// Removed is never set here: a deleted allocation keeps no backing_key
-		// and no 'issue' backing (see the deleted-state invariants asserted in
-		// collection_read.go), so this plane has no deletion marker to flag.
+		// Removed is never set here: Issue deletion retains the final live
+		// snapshot and does not mint a deletion marker.
 		result = append(result, row)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {

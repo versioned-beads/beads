@@ -485,3 +485,125 @@ func TestHistoryBookkeepingPreservesIssueTimestamp(t *testing.T) {
 		})
 	}
 }
+
+func TestIssueDatelessDeferral(t *testing.T) {
+	for _, backend := range []string{"embedded", "server"} {
+		t.Run(backend, func(t *testing.T) {
+			ctx, o := issueExperimentOptions(t, backend)
+			s, err := OpenExisting(ctx, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := s.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			original, err := s.CreateIssue(ctx, "beads/work", plainIssue("Work"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			const path = "beads/work"
+			deferRequest := IssueDeferralRequest{Path: path, Actor: "operator", ExpectedRevision: original.Revision, Deferred: true}
+			beforeFault := workflowState(t, ctx, s)
+			fault := errors.New("injected deferral failure")
+			s.afterWrite = func(stage string) error {
+				if stage == "issue-deferral" {
+					return fault
+				}
+				return nil
+			}
+			_, err = s.SetIssueDeferred(ctx, deferRequest)
+			s.afterWrite = nil
+			if !errors.Is(err, fault) || !reflect.DeepEqual(beforeFault, workflowState(t, ctx, s)) {
+				t.Fatalf("failed deferral left effects: %v", err)
+			}
+			deferred, err := s.SetIssueDeferred(ctx, deferRequest)
+			if err != nil || !deferred.Changed || deferred.Issue.Properties.Status != types.StatusDeferred || deferred.Issue.Properties.DeferUntil != nil || deferred.Issue.Version == original.Version {
+				t.Fatalf("defer: %+v %v", deferred, err)
+			}
+			assertIssueEditVersion(t, ctx, s, path, original)
+			assertIssueEditVersion(t, ctx, s, path, deferred.Issue)
+			assertIssueEditCounts(t, ctx, s, original.Properties.ID, 2)
+			ready, err := s.ReadyIssues(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range ready {
+				if item.ID == original.ID {
+					t.Fatalf("deferred Issue appeared ready: %+v", ready)
+				}
+			}
+			if _, err := s.SetIssueDeferred(ctx, deferRequest); !errors.Is(err, ErrConflict) {
+				t.Fatalf("stale guard: %v", err)
+			}
+			beforeNoop := workflowState(t, ctx, s)
+			noop, err := s.SetIssueDeferred(ctx, IssueDeferralRequest{Path: path, Actor: "operator", ExpectedRevision: deferred.Issue.Revision, Deferred: true})
+			if err != nil || noop.Changed || !reflect.DeepEqual(noop.Issue, deferred.Issue) || !reflect.DeepEqual(beforeNoop, workflowState(t, ctx, s)) {
+				t.Fatalf("repeat defer wrote state: %+v %v", noop, err)
+			}
+			opened, err := s.SetIssueDeferred(ctx, IssueDeferralRequest{Path: path, Actor: "operator", ExpectedRevision: deferred.Issue.Revision})
+			if err != nil || !opened.Changed || opened.Issue.Properties.Status != types.StatusOpen || opened.Issue.Properties.DeferUntil != nil {
+				t.Fatalf("undefer: %+v %v", opened, err)
+			}
+			assertIssueEditCounts(t, ctx, s, original.Properties.ID, 3)
+			ready, err = s.ReadyIssues(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			foundWork := false
+			for _, item := range ready {
+				foundWork = foundWork || item.ID == original.ID
+			}
+			if !foundWork {
+				t.Fatalf("undeferred Issue not ready: %+v", ready)
+			}
+			beforeNoop = workflowState(t, ctx, s)
+			noop, err = s.SetIssueDeferred(ctx, IssueDeferralRequest{Path: path, Actor: "operator", Unconditional: true})
+			if err != nil || noop.Changed || !reflect.DeepEqual(beforeNoop, workflowState(t, ctx, s)) {
+				t.Fatalf("repeat undefer wrote state: %+v %v", noop, err)
+			}
+		})
+	}
+}
+
+func TestIssueDatedDeferralWakesWithOneNativeAndGraphSuccessor(t *testing.T) {
+	for _, backend := range []string{"embedded", "server"} {
+		t.Run(backend, func(t *testing.T) {
+			ctx, o := issueExperimentOptions(t, backend)
+			s, err := OpenExisting(ctx, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			created, err := s.CreateIssue(ctx, "beads/snooze", plainIssue("Snooze"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			past := time.Now().UTC().Add(-time.Hour)
+			deferred, err := s.SetIssueDeferred(ctx, IssueDeferralRequest{
+				Path: "beads/snooze", Actor: "operator", Deferred: true,
+				Until: &past, Reason: "waiting on review",
+			})
+			if err != nil || !deferred.Changed || deferred.Issue.Properties.Status != types.StatusDeferred ||
+				deferred.Issue.Properties.DeferUntil == nil || deferred.Issue.Properties.Notes != "waiting on review" {
+				t.Fatalf("dated defer: %+v %v", deferred, err)
+			}
+			assertIssueEditCounts(t, ctx, s, created.Properties.ID, 2)
+			ready, err := s.ReadyIssues(ctx)
+			if err != nil || len(ready) != 1 || ready[0].ID != created.ID {
+				t.Fatalf("ready after wake: %+v %v", ready, err)
+			}
+			woken := ready[0]
+			if woken.Properties.Status != types.StatusOpen || woken.Properties.DeferUntil != nil || woken.Revision == deferred.Issue.Revision {
+				t.Fatalf("wake did not project native state: %+v", woken)
+			}
+			assertIssueEditCounts(t, ctx, s, created.Properties.ID, 3)
+			assertIssueEditVersion(t, ctx, s, "beads/snooze", woken)
+			if _, err := s.ReadyIssues(ctx); err != nil {
+				t.Fatal(err)
+			}
+			assertIssueEditCounts(t, ctx, s, created.Properties.ID, 3)
+		})
+	}
+}

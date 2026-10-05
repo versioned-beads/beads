@@ -245,7 +245,7 @@ func TestMemoryDeleteIncidentLinks(t *testing.T) {
 					before := workflowState(t, ctx, s)
 					for _, preview := range []bool{true, false} {
 						got, err := s.DeleteMemory(ctx, MemoryDeleteRequest{Path: path, ExpectedRevision: current.Revision, Preview: preview})
-						if !errors.Is(err, ErrDeletionPolicyUnresolved) || !reflect.ValueOf(got).IsZero() {
+						if !errors.Is(err, ErrIncidentLinkConstraint) || !strings.Contains(err.Error(), linkPath) || !reflect.ValueOf(got).IsZero() {
 							t.Fatalf("incident preview=%v: %+v %v", preview, got, err)
 						}
 						if !reflect.DeepEqual(before, workflowState(t, ctx, s)) {
@@ -439,7 +439,7 @@ func TestMemoryDeleteConcurrentWriters(t *testing.T) {
 					case err := <-results:
 						if err == nil {
 							successes++
-						} else if !errors.Is(err, ErrOutcomeUnknown) && (errors.Is(err, ErrConflict) || (backend == "embedded" && (errors.Is(err, ErrGone) || errors.Is(err, ErrDeletionPolicyUnresolved)))) {
+						} else if !errors.Is(err, ErrOutcomeUnknown) && (errors.Is(err, ErrConflict) || (backend == "embedded" && (errors.Is(err, ErrGone) || errors.Is(err, ErrIncidentLinkConstraint)))) {
 							refusals++
 						} else {
 							t.Fatalf("writer outcome: %v", err)

@@ -95,7 +95,7 @@ func TestMemoryDeletionCurrentReadAndRetainedPages(t *testing.T) {
 			if err != nil || first.Next == nil || len(first.Items) != 1 || !reflect.DeepEqual(first.Items, items[:1]) {
 				t.Fatalf("first retained page: %+v %v", first, err)
 			}
-			if _, err := store.DeleteMemory(ctx, graphstore.MemoryDeleteRequest{Path: "beads/plan", Unconditional: true}); !errors.Is(err, graphstore.ErrDeletionPolicyUnresolved) {
+			if _, err := store.DeleteMemory(ctx, graphstore.MemoryDeleteRequest{Path: "beads/plan", Unconditional: true}); !errors.Is(err, graphstore.ErrIncidentLinkConstraint) {
 				t.Fatalf("linked deletion policy was bypassed: %v", err)
 			}
 			if !reflect.DeepEqual(before, checkInventory(t, ctx, reader, 3, 2)) {

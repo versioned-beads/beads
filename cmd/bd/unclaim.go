@@ -44,6 +44,9 @@ Examples:
   bd unclaim bd-123 --if-assignee worker-7   # only if still held by worker-7`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if graphPreviewActive {
+			return runGraphPreviewUnclaim(cmd, args)
+		}
 		reason, _ := cmd.Flags().GetString("reason")
 		force, _ := cmd.Flags().GetBool("force")
 		ifAssignee, _ := cmd.Flags().GetString("if-assignee")

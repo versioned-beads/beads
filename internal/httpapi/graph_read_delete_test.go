@@ -149,7 +149,7 @@ func TestGraphReadMemoryDeletionHTTP(t *testing.T) {
 		t.Fatal("first page did not retain the later Memory before deletion")
 	}
 	retainedURL := *first.Next
-	if _, err := store.DeleteMemory(ctx, graphstore.MemoryDeleteRequest{Path: "beads/plan", Unconditional: true}); !errors.Is(err, graphstore.ErrDeletionPolicyUnresolved) {
+	if _, err := store.DeleteMemory(ctx, graphstore.MemoryDeleteRequest{Path: "beads/plan", Unconditional: true}); !errors.Is(err, graphstore.ErrIncidentLinkConstraint) {
 		t.Fatalf("linked Memory deletion was accepted: %v", err)
 	}
 	var stillPlan bdpwire.BeadRecord

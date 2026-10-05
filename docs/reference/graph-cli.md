@@ -146,12 +146,14 @@ bd update work --title 'Move the release branch after review' --unconditional
 bd update policy --properties '{"title":"Code flow policy","body":"Land reviewed changes on integration."}' --unconditional
 ```
 
-Memory deletion applies only to an **unreferenced** Memory. `bd delete ID`
-previews the result without changing storage; `--force` applies it. `bd forget
-ID` applies the same deletion directly. Applying either command requires an
+`bd delete ID` previews deletion of one unreferenced Memory or Issue without
+changing storage; `--force` applies it. `bd forget ID` applies Memory deletion
+directly and does not accept Issues. Applying either command requires an
 explicit write choice, shown here with `--unconditional`. Any live incoming,
 outgoing or self-Link makes deletion refuse; `--force` does not cascade.
-Issue deletion is not available in this graph preview.
+Memory refusal names the first blocking Link ID and the total count. Issue
+refusal lists the incident Link IDs; unlink them explicitly before retrying
+with a fresh revision.
 
 ```sh
 bd remember 'Temporary note' --id scratch
@@ -160,10 +162,35 @@ bd delete scratch --force --unconditional
 # Or, for another unreferenced Memory:
 bd remember 'Another temporary note' --id other-scratch
 bd forget other-scratch --unconditional
+# An unreferenced Issue follows the same preview and guarded apply shape:
+bd create 'Temporary task' --id temp-work
+bd delete temp-work
+bd delete temp-work --force --unconditional
 ```
 
-Deletion removes current Memory state but reserves its ID and retains prior
-snapshots. It does not create a deletion version or promise erasure or restore.
+Deletion removes current Bead state but reserves its ID and retains prior
+snapshots. It does not create a graph deletion version or promise erasure or
+restore. Native Issue deletion records its ordinary delete journal event.
+
+Use `bd defer ID...` to set Issues aside and `bd undefer ID...` to return
+deferred Issues to open. An undated defer stays in the icebox until undeferred.
+`--until` accepts the same date and relative-time forms as ordinary `bd`;
+the next `bd ready` after that time wakes the Issue, records a new version,
+and clears its defer date. `--reason` appends a line to the Issue's notes.
+Assigned Issues retain their assignee through defer and undefer. Neither
+command requires a revision flag, but `--if-revision` checks the observed
+revision for a single Issue. A repeated dateless defer or undefer is a no-op
+when no date or reason changes. `bd undefer` also clears a stale defer date
+without changing a non-deferred status.
+
+```sh
+bd defer work --until tomorrow --reason 'Waiting on review'
+bd ready                       # Wakes work once its defer date has passed
+bd undefer work                 # Or restore it explicitly
+bd defer work another-work      # Set multiple Issues aside indefinitely
+bd show work --json
+bd undefer work --if-revision REVISION_FROM_SHOW
+```
 
 ## Create, inspect, edit and remove Links
 
@@ -193,6 +220,33 @@ current Link but retains its identity and prior snapshots. The blocking
 `types/preview-blocks-v1` Type is only for live Issues; it refuses a Memory
 endpoint. See the [technical reference](/reference/graph-preview) for the
 separate blocking Dependency unlink rules and Link Type bounds.
+
+## Claim and release Issue work
+
+`bd update ID --claim` atomically claims a live Issue for the current actor.
+`bd unclaim ID...` releases assigned open or in-progress Issues. By default
+the current actor must hold each claim. Each successful release clears its
+assignee, lease, and started time, returns it to open, and retains one native
+Issue version and one graph version. A second unclaim refuses because no claim
+remains; it does not create another version. A batch attempts each ID and exits
+nonzero if any release fails.
+
+```sh
+bd update work --claim --actor rig.agent
+bd unclaim work --actor rig.agent --reason 'Handing this back'
+bd comments work              # The reason is a native Issue comment
+bd update work --claim --actor another.agent
+bd unclaim work --if-assignee another.agent --actor supervisor
+```
+
+`--if-assignee HOLDER` releases only while that holder remains assigned; a
+mismatch leaves the Issue and its lease untouched. `--force` bypasses the
+holder check for an abandoned claim, but still uses the native row
+compare-and-swap. The two flags cannot be combined. `--reason TEXT` appends a
+native Issue comment after the release; if that separate append fails, the
+release remains committed and the CLI warns. Comments are a separate feed,
+outside retained Issue state, and do not mint another Issue version. Other
+comment writes are not yet exposed in graph mode.
 
 ## Versioning and History
 

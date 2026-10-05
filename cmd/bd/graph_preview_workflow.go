@@ -6,11 +6,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	graph "github.com/steveyegge/beads/graphops"
 	"github.com/steveyegge/beads/internal/storage/graphstore"
+	"github.com/steveyegge/beads/internal/timeparsing"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/internal/ui"
 )
 
 // Returned canonical IDs can be fed back to the CLI. A bare local Bead path
@@ -145,6 +148,92 @@ func runGraphPreviewClose(cmd *cobra.Command, args []string) error {
 			verb = "Already closed"
 		}
 		return result, fmt.Sprintf("%s %s\n", verb, args[0]), nil
+	})
+}
+
+func runGraphPreviewDeferral(cmd *cobra.Command, args []string, deferred bool) error {
+	if err := graphPreviewWritePolicy(); err != nil {
+		return err
+	}
+	allowed := []string{"if-revision", "unconditional"}
+	if deferred {
+		allowed = append(allowed, "until", "reason")
+	}
+	if err := graphPreviewFlags(cmd, allowed...); err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		return graphFailure("invalid_selector", "graph deferral requires at least one Issue ID or beads/PATH", 2)
+	}
+	if len(args) > 1 && cmd.Flags().Changed("if-revision") {
+		return graphFailure("invalid_selector", "--if-revision applies to one Issue; use separate commands for guarded updates", 2)
+	}
+	paths := make([]string, len(args))
+	for i, selector := range args {
+		path, err := graphPreviewResourcePath(graphPreviewConfig.GraphScopeURL, selector)
+		if err != nil {
+			return graphFailure("invalid_selector", err.Error(), 2)
+		}
+		if err := graph.ValidateBeadPath(path); err != nil {
+			return graphFailure("invalid_selector", err.Error(), 2)
+		}
+		paths[i] = path
+	}
+	revision, unconditional, err := graphPreviewRevisionGuard(cmd, false, false)
+	if err != nil {
+		return err
+	}
+	var until *time.Time
+	var reason string
+	if deferred {
+		raw, _ := cmd.Flags().GetString("until")
+		if raw != "" {
+			parsed, err := timeparsing.ParseRelativeTime(raw, time.Now())
+			if err != nil {
+				return graphFailure("invalid_properties", fmt.Sprintf("invalid --until format %q. %s", raw, deferUntilFormatHint), 2)
+			}
+			until = &parsed
+			if parsed.Before(time.Now()) && !jsonOutput {
+				fmt.Fprintf(os.Stderr, "%s Defer date %q is in the past. Issue will appear in bd ready immediately.\n",
+					ui.RenderWarn("!"), parsed.Local().Format("2006-01-02 15:04"))
+				fmt.Fprintln(os.Stderr, "  Did you mean a future date? Use --until=+1h or --until=tomorrow")
+			}
+		}
+		reason, _ = cmd.Flags().GetString("reason")
+		reason = strings.TrimSpace(reason)
+		if cmd.Flags().Changed("reason") && reason == "" {
+			return graphFailure("invalid_properties", "reason cannot be empty", 2)
+		}
+	}
+	return withGraphStore(func(ctx context.Context, store *graphstore.Store) (any, string, error) {
+		results := make([]graphstore.IssueMutationResult, 0, len(paths))
+		var human strings.Builder
+		for i, path := range paths {
+			result, err := store.SetIssueDeferred(ctx, graphstore.IssueDeferralRequest{
+				Path: path, Actor: getActorWithGit(), ExpectedRevision: revision,
+				Unconditional: unconditional, Deferred: deferred, Until: until, Reason: reason,
+			})
+			if err != nil {
+				if len(paths) == 1 {
+					return nil, "", err
+				}
+				fmt.Fprintf(os.Stderr, "Error changing deferral for %s: %v\n", args[i], err)
+				continue
+			}
+			results = append(results, result)
+			verb := "Undeferred"
+			if deferred {
+				verb = "Deferred"
+			}
+			if !result.Changed {
+				verb = "Unchanged"
+			}
+			fmt.Fprintf(&human, "%s %s\n", verb, result.Issue.ID)
+		}
+		if len(paths) == 1 {
+			return results[0], strings.TrimSuffix(human.String(), "\n"), nil
+		}
+		return results, strings.TrimSuffix(human.String(), "\n"), nil
 	})
 }
 
