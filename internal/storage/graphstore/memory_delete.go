@@ -10,9 +10,9 @@ import (
 	"github.com/steveyegge/beads/internal/storage"
 )
 
-// ErrDeletionPolicyUnresolved refuses incident-Link cases while their deletion
-// policy remains under review. Explicit prior unlink is not an atomic cascade.
-var ErrDeletionPolicyUnresolved = errors.New("deletion_policy_unresolved: Memory deletion with live incident Links is not supported")
+// ErrIncidentLinkConstraint refuses deletion while a live Link still names the
+// Memory. The caller must unlink explicitly; --force never cascades.
+var ErrIncidentLinkConstraint = errors.New("Memory deletion requires unlinking live incident Links")
 
 // MemoryDeleteRequest is an internal disposable-preview operation. Preview is
 // read-only and may omit a guard; apply requires an observed revision or explicit
@@ -69,7 +69,11 @@ func (s *Store) DeleteMemory(ctx context.Context, request MemoryDeleteRequest) (
 			return err
 		}
 		if incident != 0 {
-			return ErrDeletionPolicyUnresolved
+			var first string
+			if err := tx.QueryRowContext(ctx, `SELECT path FROM graph_preview_links WHERE source_path=? OR target_path=? ORDER BY path LIMIT 1`, request.Path, request.Path).Scan(&first); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: %s has %d incident Link(s), starting with %s", ErrIncidentLinkConstraint, request.Path, incident, first)
 		}
 		result = MemoryDeleteResult{Memory: memory, Preview: request.Preview}
 		if request.Preview {

@@ -117,17 +117,17 @@ func TestGraphPreviewMemoryDeletePolicyError(t *testing.T) {
 	jsonOutput = true
 	var err error
 	stderr := captureStderr(t, func() {
-		err = graphStorageError(fmt.Errorf("delete: %w", graphstore.ErrDeletionPolicyUnresolved))
+		err = graphStorageError(fmt.Errorf("delete: %w", graphstore.ErrIncidentLinkConstraint))
 	})
 	var failure *exitError
-	if !errors.As(err, &failure) || failure.Code != 5 {
-		t.Fatalf("policy error lost capability refusal: %v", err)
+	if !errors.As(err, &failure) || failure.Code != 4 {
+		t.Fatalf("incident Link refusal lost constraint status: %v", err)
 	}
 	var diagnostic struct {
 		Code      string
 		Retryable bool
 	}
-	if err := json.Unmarshal([]byte(stderr), &diagnostic); err != nil || diagnostic.Code != "deletion_policy_unresolved" || diagnostic.Retryable {
+	if err := json.Unmarshal([]byte(stderr), &diagnostic); err != nil || diagnostic.Code != "constraint_violation" || diagnostic.Retryable {
 		t.Fatalf("typed non-retryable deletion policy refusal lost: %s (%v)", stderr, err)
 	}
 }

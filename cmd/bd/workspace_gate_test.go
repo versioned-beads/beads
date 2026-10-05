@@ -84,6 +84,10 @@ func TestAcquireCommandWorkspaceGatesAbsentWorkspace(t *testing.T) {
 	t.Cleanup(releaseWorkspaceGates)
 
 	list := &cobra.Command{Use: "list"}
+	before := newGateTestWorkspace(t)
+	if err := acquireCommandWorkspaceGates(context.Background(), list, before); err != nil || workspaceGateHandle == nil {
+		t.Fatalf("initial command must hold a gate: %v", err)
+	}
 	missing := filepath.Join(t.TempDir(), "nope", ".beads")
 	if err := acquireCommandWorkspaceGates(context.Background(), list, missing); err != nil {
 		t.Fatalf("absent beadsDir must be silently ungated, got %v", err)
@@ -96,6 +100,11 @@ func TestAcquireCommandWorkspaceGatesAbsentWorkspace(t *testing.T) {
 func TestAcquireCommandWorkspaceGatesBlockedByExclusiveHolder(t *testing.T) {
 	resetGateTestEnv(t)
 	t.Cleanup(releaseWorkspaceGates)
+	list := &cobra.Command{Use: "list"}
+	prior := newGateTestWorkspace(t)
+	if err := acquireCommandWorkspaceGates(context.Background(), list, prior); err != nil || workspaceGateHandle == nil {
+		t.Fatalf("initial command must hold a gate: %v", err)
+	}
 	beadsDir := newGateTestWorkspace(t)
 
 	gate, err := workspacegate.ForWorkspace(beadsDir)
@@ -109,7 +118,6 @@ func TestAcquireCommandWorkspaceGatesBlockedByExclusiveHolder(t *testing.T) {
 	}
 	defer func() { _ = holder.Release() }()
 
-	list := &cobra.Command{Use: "list"}
 	if err := acquireCommandWorkspaceGates(context.Background(), list, beadsDir); err == nil {
 		t.Fatal("SHARED acquisition under a foreign exclusive holder must abort, got nil error")
 	}

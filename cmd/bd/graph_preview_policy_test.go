@@ -302,8 +302,8 @@ func TestGraphPreviewC0DeferredCommandsRefuseBeforeLegacyOpen(t *testing.T) {
 		"memoryCreate", "memoryRead", "memoryBodyFileInput", "memoryBodyStdinInput", "memoryPropertiesUpdate",
 		"memorySelectedUpdate", "memorySelectedUpdateUnconditional", "memoryOverwriteDisclosure", "memoryUnreferencedDelete", "issueCreate", "issueCreateAuthorship",
 		"issueCreateFields", "issueInitialNotes", "issueNotesAppend", "issueEstimateUpdate", "issueReferenceUpdate",
-		"issueClaim", "issueTextUpdate", "issuePriorityUpdate", "issueAssigneeUpdate", "issueAssigneeFilter", "issueDueDate", "issueDueFilter", "informationalLink", "blockingDependency", "linkPropertiesUpdate", "linkUnlink", "blockingDependencyUnlink",
-		"incidentLinks", "ownedLinks", "issueClose", "issueReopen", "issueReady", "genericRead",
+		"issueClaim", "issueUnclaim", "issueTextUpdate", "issuePriorityUpdate", "issueAssigneeUpdate", "issueAssigneeFilter", "issueDueDate", "issueDueFilter", "informationalLink", "blockingDependency", "linkPropertiesUpdate", "linkUnlink", "blockingDependencyUnlink",
+		"incidentLinks", "ownedLinks", "issueClose", "issueReopen", "issueDatelessDeferral", "issueReady", "genericRead",
 		"issueList", "beadList", "beadTypeFilter", "issueBlocked", "genericTraversal",
 		"memoryDiscovery", "memoryBodyRecall", "exactVersionRead", "exactVersionCompare",
 		// versionList is `bd versions` (and `bd history` as its graph-mode
