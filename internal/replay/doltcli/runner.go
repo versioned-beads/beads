@@ -86,9 +86,9 @@ func (e *ExitError) Error() string {
 }
 
 // Runner starts the dolt and bd children of a seeding. It is the one place the
-// harness starts a child on a seed (H2): every child gets the environment the
-// Runner was built with (H19), none gets a verb on the deny-lists, and every one
-// started is recorded in Log.
+// harness starts a child on a seed: every child gets the environment the Runner was
+// built with, none gets a verb on the deny-lists, and every one started is recorded
+// in Log.
 type Runner struct {
 	// DoltBin and BdBin are the programs, named by path and never looked up.
 	DoltBin string
@@ -247,8 +247,8 @@ func calledProcedure(sql string) (string, bool) {
 }
 
 // ChildEnv is the environment every dolt and bd child that touches a seed runs
-// under (H19). It is built from nothing, not from the ambient environment by
-// deleting names from it, so a variable nobody listed cannot reach a child. HOME,
+// under. It is built from nothing, not from the ambient environment by deleting
+// names from it, so a variable nobody listed cannot reach a child. HOME,
 // XDG_CONFIG_HOME, DOLT_ROOT_PATH and TMPDIR all lie inside envRoot, which the
 // seeding owns and which holds its own dolt identity, so neither the real home nor
 // the real dolt configuration is read or written. PATH is one directory of the

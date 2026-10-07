@@ -22,8 +22,8 @@ import (
 // CLI as an argument, so it must not be able to pass for an option.
 var baseHash = regexp.MustCompile(`^[0-9a-v]{32}$`)
 
-// The statements the seeding makes of the copy. Every one is a read, or in the one
-// case below, a change to the copy's own clone-local plane.
+// The statements the seeding reads the copy with. The one change it makes, to the
+// copy's own clone-local plane, is written where it is made, in clearLocalPlane.
 const (
 	querySchemaVersion  = "SELECT MAX(version) FROM schema_migrations"
 	queryIgnoredVersion = "SELECT MAX(version) FROM ignored_schema_migrations"
@@ -49,8 +49,8 @@ const (
 type seeding struct {
 	cfg    SeedConfig
 	runner *doltcli.Runner
-	// db is the name of the database directory the copy keeps the oracle's name for,
-	// and dbDir is where it is: the directory the dolt CLI is run in.
+	// db is the name of the copy's database directory, which is the oracle's, and
+	// dbDir is where it is: the directory the dolt CLI is run in.
 	db    string
 	dbDir string
 	// issues is how many issues the copy held at the base.
@@ -60,10 +60,9 @@ type seeding struct {
 // Seed gives cfg.WorkDir the oracle's state at cfg.Base and migrates it to the
 // integration's schema, and says what it did.
 //
-// The recipe is the one the probes established. The oracle's dolt directory is
-// copied, never opened. On the copy the head is moved to the base, the schema is
-// read and checked against the floor, and the clone-local plane is given the state
-// a fresh clone has. Every remote and backup is removed, the project file is
+// The oracle's dolt directory is copied, never opened. On the copy the head is
+// moved to the base, the schema is read and checked against the floor, and the
+// clone-local plane is given the state a fresh clone has. Every remote and backup is removed, the project file is
 // written with the copy's own identity, and only then does the first bd command run:
 // the migration, which is the open of an older store that the product would do on
 // any first command, made on its own so that it can be measured and refused. What it

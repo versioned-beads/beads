@@ -13,8 +13,8 @@ import (
 )
 
 // DefaultSchemaFloor is the lowest main-track schema version a seeded base may be
-// at. It is the lowest base any probe has covered, not a limit of the product: a
-// base below it is refused rather than seeded on a hope.
+// at. It is the lowest base the recipe has been tried on, not a limit of the
+// product: a base below it is refused rather than seeded on a hope.
 const DefaultSchemaFloor = 64
 
 // The classes of a refusal. A seeding refuses when something its recipe depends on
