@@ -11,6 +11,7 @@ go_library(
         "run.go",
         "runner.go",
         "seed.go",
+        "seed_recipe.go",
         "step.go",
         "store.go",
         "types.go",
@@ -31,6 +32,8 @@ go_test(
     srcs = [
         "b6_fixture_test.go",
         "b6_run_test.go",
+        "b8_fixture_test.go",
+        "b8_spike_test.go",
         "e2e_test.go",
         "fixture_test.go",
         "integration_test.go",
@@ -48,6 +51,8 @@ go_test(
         "//internal/replay/oracle",
         "//internal/replay/replaytest",
         "//internal/replay/translate",
+        "//internal/storage/schema",
+        "//internal/testutil/bazeltest",
     ],
 )
 
