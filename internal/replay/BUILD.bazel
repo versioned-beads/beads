@@ -5,6 +5,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "replay_test",
     srcs = [
+        "b8_literals_test.go",
         "layout_test.go",
         "pinnedbd_test.go",
     ],
@@ -14,7 +15,10 @@ go_test(
         "//scripts/mutation-translator:go_srcs",
         "//scripts/oracle-query:go_srcs",
     ],
-    deps = ["//internal/testutil/bazeltest"],
+    deps = [
+        "//internal/replay/doltcli",
+        "//internal/testutil/bazeltest",
+    ],
 )
 
 # --- begin go_srcs (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---

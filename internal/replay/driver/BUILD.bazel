@@ -11,6 +11,7 @@ go_library(
         "run.go",
         "runner.go",
         "seed.go",
+        "seed_findings.go",
         "seed_recipe.go",
         "step.go",
         "store.go",
@@ -32,7 +33,11 @@ go_test(
     srcs = [
         "b6_fixture_test.go",
         "b6_run_test.go",
+        "b8_controls_test.go",
         "b8_fixture_test.go",
+        "b8_policy_test.go",
+        "b8_run_test.go",
+        "b8_seed_test.go",
         "b8_spike_test.go",
         "e2e_test.go",
         "fixture_test.go",
@@ -44,6 +49,8 @@ go_test(
         "store_test.go",
         "walk_test.go",
     ],
+    # TestB8LinkedEngineNamed reads this tree's go.mod.
+    data = ["//:go.mod"],
     embed = [":driver"],
     deps = [
         "//internal/replay/compare",

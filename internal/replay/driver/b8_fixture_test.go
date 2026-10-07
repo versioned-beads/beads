@@ -31,9 +31,19 @@ import (
 // seedVariant is one shape of the synthetic oracle.
 type seedVariant struct {
 	name string
+	// bigNumber makes one base issue hold a number in its metadata that the older bd
+	// stores rounded, and that the integration refuses to turn versioned history on
+	// over.
+	bigNumber bool
+	// noIdentity leaves the base's store without a project identity.
+	noIdentity bool
 }
 
-var defaultSeedVariant = seedVariant{name: "plain"}
+var (
+	defaultSeedVariant = seedVariant{name: "plain"}
+	bigNumberVariant   = seedVariant{name: "bignum", bigNumber: true}
+	noIdentityVariant  = seedVariant{name: "noid", noIdentity: true}
+)
 
 // seedOracle is a synthetic oracle and the facts about it a test needs.
 type seedOracle struct {
@@ -122,6 +132,12 @@ func buildSeedOracle(t testing.TB, root string, v seedVariant) *seedOracle {
 		o.ids = append(o.ids, replaytest.JSONID(t, bd("create", title, "-p", "2", "-t", "task", "--json")))
 	}
 	bd("update", o.ids[0], "--claim")
+	if v.bigNumber {
+		// 2^53+1 is a number a float cannot hold. The older bd keeps 2^53, which a
+		// version cannot tell from its neighbour, and that is what the integration
+		// refuses to record.
+		bd("update", o.ids[2], "--metadata", `{"n":9007199254740993}`)
+	}
 	replaytest.RunDolt(t, o.data, "commit", "--allow-empty", "-m", "schema: apply migrations")
 	o.base = replaytest.HeadCommit(t, o.data)
 
@@ -136,6 +152,16 @@ func buildSeedOracle(t testing.TB, root string, v seedVariant) *seedOracle {
 	bd("update", o.ids[0], "--description", "tail description")
 	bd("update", o.ids[1], "--title", "tail title")
 	o.tailID = replaytest.JSONID(t, bd("create", "tail issue", "-p", "2", "-t", "task", "--json"))
+
+	if v.noIdentity {
+		// The identity goes last, in a commit of its own that the walk reads as the
+		// base, so that nothing the older bd does afterwards has to run on a store
+		// without one. A seeding of this variant has a base and no tail.
+		replaytest.RunDolt(t, o.data, "sql", "-q", "DELETE FROM metadata WHERE `key` = '_project_id'")
+		replaytest.RunDolt(t, o.data, "add", "-A")
+		replaytest.RunDolt(t, o.data, "commit", "-m", "schema: drop the project identity")
+		o.base = replaytest.HeadCommit(t, o.data)
+	}
 
 	// repo_mtimes has one writer, multi-repo hydration, which a synthetic oracle has
 	// no use for; a row written by hand makes the table non-empty.
@@ -257,12 +283,18 @@ func repoLinkedEngine(t testing.TB) string {
 // product's own answer and not the harness's.
 func newSeedConfig(t testing.TB, o *seedOracle) SeedConfig {
 	t.Helper()
+	return seedConfigAt(t, o, t.TempDir())
+}
+
+// seedConfigAt is newSeedConfig with the directory the work project and the
+// seeding's own environment live under named by the caller.
+func seedConfigAt(t testing.TB, o *seedOracle, root string) SeedConfig {
+	t.Helper()
 	replaytest.Isolate(t)
 	doltBin, err := doltcli.Path()
 	if err != nil {
 		t.Fatalf("dolt: %v", err)
 	}
-	root := t.TempDir()
 	return SeedConfig{
 		OracleDataDir: o.data,
 		Base:          o.base,

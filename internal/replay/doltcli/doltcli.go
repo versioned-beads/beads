@@ -44,6 +44,31 @@ var deniedEnvVars = map[string]bool{
 	"BEADS_BACKUP_ENABLED":        true,
 }
 
+// DeniedDoltVerbs are the dolt subcommands that send a store's state somewhere
+// else or take someone else's state in: each starts with the words listed. The
+// harness's Runner refuses every one of them. Taking a remote or a backup away
+// (`remote remove`, `backup remove`) is not on the list: that is how a seeded
+// copy is cut off from the places it was cloned from.
+var DeniedDoltVerbs = [][]string{
+	{"push"}, {"fetch"}, {"pull"},
+	{"remote", "add"},
+	{"backup", "add"}, {"backup", "sync"}, {"backup", "sync-url"}, {"backup", "restore"},
+}
+
+// DeniedBdVerbs are the bd subcommands that do the same through bd, which has its
+// own way to push a store, pull one and back one up. Every `bd backup` verb is
+// refused, whatever follows it.
+var DeniedBdVerbs = [][]string{
+	{"backup"},
+	{"dolt", "push"}, {"dolt", "pull"},
+}
+
+// DeniedSQLProcedures are the stored procedures that do from inside a statement
+// what the dolt verbs above do from the command line. A `dolt sql` command whose
+// statement calls one of them is refused like the verb it stands for. Reading the
+// tables that list remotes and backups is not a call and is allowed.
+var DeniedSQLProcedures = []string{"dolt_push", "dolt_pull", "dolt_fetch", "dolt_remote", "dolt_backup"}
+
 // SanitizedEnv returns base with every denied ambient variable removed, for
 // use as the environment of any dolt or bd process the harness starts.
 func SanitizedEnv(base []string) []string {
