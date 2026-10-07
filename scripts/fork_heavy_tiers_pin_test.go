@@ -19,15 +19,19 @@ import (
 // on it). It pins .github/workflows/fork-heavy-tiers.yml, the temporary
 // workflow that keeps the heavy test tiers running on every pull request into
 // integration while the sync replaces pr-risk.yml's copy of them (work package
-// W1, be-fxkoxb; ruling be-4y7b5s sections 3.4, 5.1 rule 4, 8.3 and 11).
+// W1, be-fxkoxb; ruling be-4y7b5s sections 3.4, 5.1 rule 4, 8.3 and 11, as
+// amended by be-bg8llq).
 //
 // The workflow is lifted, not written: its eight jobs come out of the git blobs
-// of pr-risk.yml and proxied-local-smoke.yml at forkHeavyBase with four edits
+// of pr-risk.yml and proxied-local-smoke.yml at forkHeavyBase with five edits
 // and nothing else (a "Fork Heavy " name prefix, needs cut down to
 // build-embedded, the tier if: dropped, a Blacksmith runs-on made
-// ubuntu-latest), plus one aggregator, "Fork Heavy Tiers / Required", that
-// fails unless every other job's result is exactly success. The acceptance
-// criteria of the bead are pinned like this:
+// ubuntu-latest, and, for managed-local-smoke alone, its Blacksmith-only cache
+// unit cut: the comment above it and the steps "Compute cache date" and
+// "Restore Blacksmith setup-go cache", which leaves six of its eight steps),
+// plus one aggregator, "Fork Heavy Tiers / Required", that fails unless every
+// other job's result is exactly success. The acceptance criteria of the bead
+// are pinned like this:
 //
 //   - 1, the job set and the aggregator: TestForkHeavyTiersJobSetAndAggregator
 //     and TestForkHeavyTiersAggregatorFailsUnlessEveryNeedSucceeded.
@@ -40,16 +44,22 @@ import (
 //   - 3, R8 and R9 over both workflow files: fork_proxied_lane_pin_test.go.
 //
 // Criteria 4 and 5 are runs, not pins, and nothing in this file stands in for
-// them: upstream's workflow sweeps (bazel_policy_test.go, pull_dolt_image_test.go
-// and check_doc_freshness_test.go) over the new file in a throwaway worktree at
-// upstream main, the applicable Bazel gates, and the fork pull request that runs
-// the lifted workflow with its aggregator green at the exact reviewed head.
+// them: the three-row table of ruling be-bg8llq section 3.5 (upstream's scripts
+// package, whose workflow sweeps are bazel_policy_test.go, ci_f7c_advisory_test.go,
+// pull_dolt_image_test.go and check_doc_freshness_test.go, run in a throwaway
+// worktree at upstream main without the lifted file, with it, and with it plus
+// the one-entry patch of section 3.1), the applicable Bazel gates, and the fork
+// pull request that runs the lifted workflow with its aggregator green at the
+// exact reviewed head.
 //
 // Every pin here asserts a pre-sync shape, so each is gone or re-pointed in the
 // sync pull request (ruling section 11). When rbe-fork opens to vb and the
 // workflow is retired, delete the workflow, this file, its line in
-// scripts/BUILD.bazel and its entry in tools/bazel/equivalence_allowlist.txt
-// together.
+// scripts/BUILD.bazel, its entry in tools/bazel/equivalence_allowlist.txt and
+// the "fork-heavy-tiers.yml": 3 entry, with its comment, that W4 adds to
+// scripts/pull_dolt_image_test.go after the sync (be-bg8llq sections 3.1 and
+// 4.4), together. A retirement that leaves that entry behind fails nothing,
+// which is why it is on this list.
 
 const (
 	forkHeavyTiersWorkflow   = "fork-heavy-tiers.yml"
@@ -73,7 +83,7 @@ type forkHeavyJob struct {
 	needsBuild bool           // the lift leaves needs: [build-embedded]; otherwise none
 	timeout    int            // timeout-minutes, 0 for unset
 	matrix     map[string]any // strategy.matrix, nil for a job that has none
-	steps      []string       // step labels in order: the name, else the uses
+	steps      []string       // the lifted job's step labels in order: the name, else the uses
 }
 
 var forkHeavyJobs = []forkHeavyJob{
@@ -142,33 +152,21 @@ var forkHeavyJobs = []forkHeavyJob{
 	{
 		id: "managed-local-smoke", source: "proxied-local-smoke.yml",
 		name: "Managed-local proxied lifecycle (Linux, offline)", timeout: 25,
+		// Six of the source's eight steps: edit 5 cuts the cache unit.
 		steps: []string{
-			forkHeavyCheckout, "Set up Go", "Compute cache date", "Restore Blacksmith setup-go cache",
-			"Install pinned Dolt CLI", "Build bd and compile the test binary (online)",
+			forkHeavyCheckout, "Set up Go", "Install pinned Dolt CLI",
+			"Build bd and compile the test binary (online)",
 			"Assert the managed-local lifecycle tests are compiled in",
 			"Run managed-local lifecycle lane offline (loopback-only netns)",
 		},
 	},
 }
 
-// OPEN RULING (be-fxkoxb, for the architect). managed-local-smoke carries
-// Blacksmith text that the four ruled edits do not remove: a step named
-// "Restore Blacksmith setup-go cache" (self-hosted runners only, keyed
-// blacksmith-sg-v1-...) and a comment about that key. Section 3.4 says the lift
-// is four edits and nothing else, with step names verbatim; section 5.1 rule 4
-// says fork-owned workflows contain NO Blacksmith text. Both cannot hold, and
-// which one gives is not this file's call.
-//
-// Until the ruling is made, these pins hold the one reading every rule agrees
-// on: the restore step is gone (it is guarded to self-hosted runners, so
-// dropping it changes nothing on ubuntu-latest), and so is every word of
-// Blacksmith, comments included (TestForkHeavyTiersNamesNothingTheRulingBars).
-// "Compute cache date" only feeds that step's key, so it may stay, verbatim, or
-// go. When the ruling lands, pin its one answer and delete this tolerance.
-var (
-	forkHeavyDroppedSteps      = []string{"Restore Blacksmith setup-go cache"}
-	forkHeavyMaybeDroppedSteps = []string{"Compute cache date"}
-)
+// Edit 5, ruled in be-bg8llq section 2: managed-local-smoke loses its
+// Blacksmith-only cache unit, these two steps and the comment above them. The
+// YAML oracle sees the steps; TestForkHeavyTiersNamesNothingTheRulingBars sees
+// the comment. No other job has a step by either name.
+var forkHeavyDroppedSteps = []string{"Compute cache date", "Restore Blacksmith setup-go cache"}
 
 // The keys a lifted job may have, all of which the source jobs have too.
 var forkHeavyJobKeys = []string{"name", "needs", "runs-on", "timeout-minutes", "strategy", "env", "steps"}
@@ -284,29 +282,15 @@ func forkHeavyStepLabels(job map[string]any) []string {
 	return labels
 }
 
-// forkHeavyStepVariants is the steps a lifted job may have: the source's, less
-// the steps that must go, and that again less the steps that may go.
-func forkHeavyStepVariants(steps []any) [][]any {
-	without := func(steps []any, drop []string) []any {
-		kept := make([]any, 0, len(steps))
-		for _, step := range steps {
-			if !slices.Contains(drop, forkHeavyStepLabel(step)) {
-				kept = append(kept, step)
-			}
+// forkHeavyKeptSteps is a source job's steps less the ones edit 5 drops.
+func forkHeavyKeptSteps(steps []any) []any {
+	kept := make([]any, 0, len(steps))
+	for _, step := range steps {
+		if !slices.Contains(forkHeavyDroppedSteps, forkHeavyStepLabel(step)) {
+			kept = append(kept, step)
 		}
-		return kept
 	}
-	required := without(steps, forkHeavyDroppedSteps)
-	return [][]any{required, without(required, forkHeavyMaybeDroppedSteps)}
-}
-
-// forkHeavyLabelVariants is forkHeavyStepVariants for the table's step labels.
-func forkHeavyLabelVariants(labels []string) [][]string {
-	drop := func(labels, gone []string) []string {
-		return slices.DeleteFunc(slices.Clone(labels), func(label string) bool { return slices.Contains(gone, label) })
-	}
-	required := drop(labels, forkHeavyDroppedSteps)
-	return [][]string{required, drop(required, forkHeavyMaybeDroppedSteps)}
+	return kept
 }
 
 func forkHeavyShow(value any) string {
@@ -648,9 +632,10 @@ func TestForkHeavyTiersNamesOnlyHelpersThatExist(t *testing.T) {
 }
 
 // Criterion 2, the lifted shape without git: each job keeps the ids, names,
-// needs, timeouts, matrices and steps of its source, so a retype or a trim shows
-// even where history is not at hand (TestForkHeavyTiersLiftMatchesSourceBlobs
-// then compares every byte of the values).
+// needs, timeouts, matrices and steps of its source, less managed-local-smoke's
+// two cache steps (edit 5, be-bg8llq), so a retype or a trim shows even where
+// history is not at hand (TestForkHeavyTiersLiftMatchesSourceBlobs then compares
+// every byte of the values).
 func TestForkHeavyTiersJobsKeepTheirShape(t *testing.T) {
 	jobs := forkHeavyRawJobs(t)
 	legs := 0
@@ -692,10 +677,8 @@ func TestForkHeavyTiersJobsKeepTheirShape(t *testing.T) {
 		} else if wantStrategy := (map[string]any{"fail-fast": false, "matrix": want.matrix}); !reflect.DeepEqual(job["strategy"], wantStrategy) {
 			t.Errorf("job %s: strategy = %v, want %v", want.id, job["strategy"], wantStrategy)
 		}
-		gotSteps := forkHeavyStepLabels(job)
-		variants := forkHeavyLabelVariants(want.steps)
-		if !slices.ContainsFunc(variants, func(variant []string) bool { return slices.Equal(variant, gotSteps) }) {
-			t.Errorf("job %s: steps = %q, want %q (step names stay verbatim)", want.id, gotSteps, variants[0])
+		if gotSteps := forkHeavyStepLabels(job); !slices.Equal(gotSteps, want.steps) {
+			t.Errorf("job %s: steps = %q, want %q (step names stay verbatim; managed-local-smoke alone loses its cache unit, edit 5 of be-bg8llq, and keeps six)", want.id, gotSteps, want.steps)
 		}
 
 		count := 1
@@ -715,9 +698,10 @@ func TestForkHeavyTiersJobsKeepTheirShape(t *testing.T) {
 	}
 }
 
-// forkHeavyLift applies the four ruled edits to a source job: the name gains the
-// prefix, needs go (the caller compares them as a set), the tier if: goes, and a
-// Blacksmith runs-on becomes ubuntu-latest.
+// forkHeavyLift applies the five ruled edits to a source job: the name gains the
+// prefix, needs go (the caller compares them as a set), the tier if: goes, a
+// Blacksmith runs-on becomes ubuntu-latest, and the steps of forkHeavyDroppedSteps
+// go (be-bg8llq; the comment above them is not YAML, so it is not here).
 func forkHeavyLift(t *testing.T, id string, source map[string]any) map[string]any {
 	t.Helper()
 	job := map[string]any{}
@@ -734,13 +718,17 @@ func forkHeavyLift(t *testing.T, id string, source map[string]any) map[string]an
 	if runsOn, ok := job["runs-on"].(string); ok && strings.Contains(strings.ToLower(runsOn), "blacksmith") {
 		job["runs-on"] = "ubuntu-latest"
 	}
+	if steps, ok := job["steps"].([]any); ok {
+		job["steps"] = forkHeavyKeptSteps(steps)
+	}
 	return job
 }
 
 // Criterion 2, the lift diff. Every lifted job equals its source blob at
-// forkHeavyBase after the four ruled edits (section 3.4), and nothing else: not
-// a retyped command, a loosened timeout or a reworded step. The one deviation
-// allowed is the open ruling above.
+// forkHeavyBase after the five ruled edits (section 3.4 as amended by be-bg8llq
+// section 2), and nothing else: not a retyped command, a loosened timeout or a
+// reworded step. Edit 5 fires for managed-local-smoke alone and takes exactly
+// the two steps of forkHeavyDroppedSteps, which the last check below counts.
 func TestForkHeavyTiersLiftMatchesSourceBlobs(t *testing.T) {
 	if os.Getenv("TEST_SRCDIR") != "" {
 		t.Skip("the source blobs come from git history, which scripts_test's runfiles do not hold; runs under go test")
@@ -771,6 +759,7 @@ func TestForkHeavyTiersLiftMatchesSourceBlobs(t *testing.T) {
 		return doc.Jobs
 	}
 
+	dropped := map[string]int{} // job id -> source steps edit 5 takes out of it
 	for _, want := range forkHeavyJobs {
 		source, ok := sourceJobs(want.source)[want.id].(map[string]any)
 		if !ok {
@@ -791,22 +780,16 @@ func TestForkHeavyTiersLiftMatchesSourceBlobs(t *testing.T) {
 		delete(lifted, "needs")
 
 		expected := forkHeavyLift(t, want.id, source)
-		sourceSteps, _ := expected["steps"].([]any)
-		var diffs []string
-		matched := false
-		for i, steps := range forkHeavyStepVariants(sourceSteps) {
-			expected["steps"] = steps
-			d := forkHeavyDiff(want.id, expected, lifted)
-			if len(d) == 0 {
-				matched = true
-				break
-			}
-			if i == 0 {
-				diffs = d
-			}
+		if diffs := forkHeavyDiff(want.id, expected, lifted); len(diffs) > 0 {
+			t.Errorf("job %s differs from %s:%s at %s by more than the five ruled edits (be-bg8llq):\n  %s", want.id, want.source, want.id, forkHeavyBase[:12], strings.Join(diffs, "\n  "))
 		}
-		if !matched {
-			t.Errorf("job %s differs from %s:%s at %s by more than the four ruled edits:\n  %s", want.id, want.source, want.id, forkHeavyBase[:12], strings.Join(diffs, "\n  "))
+		sourceSteps, _ := source["steps"].([]any)
+		keptSteps, _ := expected["steps"].([]any)
+		if cut := len(sourceSteps) - len(keptSteps); cut > 0 {
+			dropped[want.id] = cut
 		}
+	}
+	if wantDropped := map[string]int{"managed-local-smoke": len(forkHeavyDroppedSteps)}; !reflect.DeepEqual(dropped, wantDropped) {
+		t.Errorf("edit 5 took steps %v out of the source jobs, want %v: it fires for managed-local-smoke alone and takes exactly %q (be-bg8llq section 2)", dropped, wantDropped, forkHeavyDroppedSteps)
 	}
 }
