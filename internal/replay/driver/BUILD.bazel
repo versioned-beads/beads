@@ -12,6 +12,7 @@ go_library(
         "runner.go",
         "seed.go",
         "seed_findings.go",
+        "seed_flow.go",
         "seed_recipe.go",
         "step.go",
         "store.go",

@@ -1,8 +1,12 @@
 package driver
 
 import (
-	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
+	"slices"
+	"strings"
 
 	"github.com/steveyegge/beads/internal/replay/doltcli"
 	"github.com/steveyegge/beads/internal/replay/translate"
@@ -55,7 +59,7 @@ func (e *SeedRefused) Error() string {
 // HarnessFault reports whether the refusal is a fault of the harness's own recipe
 // or fixture. Every class but the migration's is: with the recipe applied the
 // product has nothing to refuse.
-func (*SeedRefused) HarnessFault() bool { return false }
+func (e *SeedRefused) HarnessFault() bool { return e.Class != RefusedMigration }
 
 // SeedConfig is everything one seeding needs. Every tool is named by path and
 // none is looked up, so the dolt and the bd a seeding ran are the ones the caller
@@ -111,32 +115,171 @@ type ignoredPlan struct {
 	Keep    []string
 }
 
+// The clone-local plane's policy. A fresh clone holds none of another clone's
+// events, leases, wisps or counters, so a seeded copy is given the state a fresh
+// clone has: the tables below are emptied, the counter is put back to its first
+// value, and the migration cursor is left alone because the migrations go on from
+// it. Nothing is dropped or truncated: the tables stay, so the migrations that
+// follow find the shape they expect.
+const (
+	// wispTablePrefix starts the name of every table a wisp's rows are kept in.
+	wispTablePrefix = "wisp_"
+	// counterTable holds the one counter row a fresh clone starts at zero.
+	counterTable = "bd_events_seq"
+	// cursorTable is the ignored track's migration cursor.
+	cursorTable = "ignored_schema_migrations"
+)
+
+// clearedTables are the clone-local tables, besides the wisp tables, whose rows are
+// deleted.
+var clearedTables = []string{"events", "bd_events_journal", "leases", "local_metadata", "repo_mtimes", "wisps"}
+
+// tableIdentifier is what a table name must look like to be put in a statement.
+var tableIdentifier = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
 // classifyIgnoredPlane sorts the names of the copy's ignored tables into the
 // policy. It refuses a name that is not a plain identifier and a name the policy
-// does not know, and names it.
-func classifyIgnoredPlane(_ []string) (ignoredPlan, error) {
-	return ignoredPlan{}, errSeedNotBuilt
+// does not know, and names it. A table named twice is listed once.
+func classifyIgnoredPlane(names []string) (ignoredPlan, error) {
+	var plan ignoredPlan
+	var unknown []string
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if !tableIdentifier.MatchString(name) {
+			return ignoredPlan{}, &SeedRefused{
+				Class:  RefusedIgnoredPlane,
+				Detail: fmt.Sprintf("an ignored table is named %q, which is not a plain identifier", name),
+			}
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		switch {
+		case slices.Contains(clearedTables, name) || strings.HasPrefix(name, wispTablePrefix):
+			plan.Clear = append(plan.Clear, name)
+		case name == counterTable:
+			plan.Counter = append(plan.Counter, name)
+		case name == cursorTable:
+			plan.Keep = append(plan.Keep, name)
+		default:
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) > 0 {
+		slices.Sort(unknown)
+		return ignoredPlan{}, &SeedRefused{
+			Class:  RefusedIgnoredPlane,
+			Detail: "the recipe has no policy for the ignored table " + strings.Join(unknown, ", "),
+		}
+	}
+	slices.Sort(plan.Clear)
+	slices.Sort(plan.Counter)
+	slices.Sort(plan.Keep)
+	return plan, nil
+}
+
+// seedMetadata is the project file of a fresh init, in the order its keys are
+// written.
+type seedMetadata struct {
+	Database     string `json:"database"`
+	Backend      string `json:"backend"`
+	DoltMode     string `json:"dolt_mode"`
+	DoltDatabase string `json:"dolt_database"`
+	ProjectID    string `json:"project_id,omitempty"`
 }
 
 // renderSeedMetadata is the text of the seeded copy's .beads/metadata.json for the
 // database directory named database: the fresh-init shape, with projectID as the
 // copy's own project id, and without that key when projectID is empty.
-func renderSeedMetadata(_, _ string) ([]byte, error) {
-	return nil, errSeedNotBuilt
+func renderSeedMetadata(database, projectID string) ([]byte, error) {
+	if database == "" {
+		return nil, errors.New("the project file needs the name of the database directory")
+	}
+	return json.MarshalIndent(seedMetadata{
+		Database:     "dolt",
+		Backend:      "dolt",
+		DoltMode:     "embedded",
+		DoltDatabase: database,
+		ProjectID:    projectID,
+	}, "", "  ")
 }
+
+// engineModule is the dolt engine's module path.
+const engineModule = "github.com/dolthub/dolt/go"
 
 // LinkedEngine names the dolt engine a bd built from the go.mod text links: the
 // module path and version of its requirement, as go.mod writes them. The text is
 // the caller's, not a binary's, because a binary built by another build system
-// may carry no build information to read it from.
-func LinkedEngine(_ []byte) (string, error) {
-	return "", errSeedNotBuilt
+// may carry no build information to read it from. An engine that go.mod replaces
+// is named with its replacement.
+func LinkedEngine(goMod []byte) (string, error) {
+	var version, replacement string
+	note := func(directive string, words []string) {
+		switch {
+		case directive == "require" && len(words) >= 2 && words[0] == engineModule:
+			version = words[1]
+		case directive == "replace" && len(words) >= 1 && words[0] == engineModule:
+			if i := slices.Index(words, "=>"); i > 0 {
+				replacement = strings.Join(words[i+1:], " ")
+			}
+		}
+	}
+	block := ""
+	for _, line := range strings.Split(string(goMod), "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		words := strings.Fields(line)
+		switch {
+		case len(words) == 0:
+		case block != "":
+			if words[0] == ")" {
+				block = ""
+			} else {
+				note(block, words)
+			}
+		case len(words) == 2 && words[1] == "(" && (words[0] == "require" || words[0] == "replace"):
+			block = words[0]
+		case words[0] == "require" || words[0] == "replace":
+			note(words[0], words[1:])
+		}
+	}
+	if version == "" {
+		return "", fmt.Errorf("go.mod does not require %s", engineModule)
+	}
+	if replacement != "" {
+		return engineModule + " " + version + " => " + replacement, nil
+	}
+	return engineModule + " " + version, nil
 }
 
-var errSeedNotBuilt = errors.New("seeding is not built")
+// refusalClassOf names the refusal the product's own words in a command's output
+// make, or "" when they make none. It is the one place the harness reads the
+// product's text, and it reads two phrases of it: the workspace identity check,
+// and the gate that will not migrate a store that looks remote-backed.
+func refusalClassOf(output string) string {
+	switch {
+	case strings.Contains(output, "workspace identity mismatch detected"):
+		return RefusedIdentity
+	case strings.Contains(output, "refusing to auto-apply") && strings.Contains(output, "remote-backed database"):
+		return RefusedRemoteMigrateGate
+	}
+	return ""
+}
 
-// Seed gives cfg.WorkDir the oracle's state at cfg.Base and migrates it to the
-// integration's schema, and says what it did.
-func Seed(_ context.Context, _ SeedConfig) (SeedRecord, error) {
-	return SeedRecord{}, errSeedNotBuilt
+// exitRefusal is the refusal of class made by a child that exited above zero. The
+// child's report is kept for a reader who wants the product's text, and stays out
+// of the detail, which is the harness's own words.
+func exitRefusal(class, detail string, exit *doltcli.ExitError) *SeedRefused {
+	return &SeedRefused{
+		Class:  class,
+		Detail: detail,
+		Exit: &translate.ExecError{
+			Argv:     exit.Args,
+			ExitCode: exit.ExitCode,
+			Output:   string(exit.Stdout) + string(exit.Stderr),
+			Err:      exit,
+		},
+	}
 }
