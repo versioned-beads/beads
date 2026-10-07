@@ -43,6 +43,7 @@ go_test(
         "b8_controls_test.go",
         "b8_fixture_test.go",
         "b8_policy_test.go",
+        "b8_prereq_control_test.go",
         "b8_run_test.go",
         "b8_seed_test.go",
         "b8_spike_test.go",
