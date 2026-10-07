@@ -269,8 +269,9 @@ func (p *csvParser) separator() (byte, error) {
 }
 
 // Run runs an arbitrary dolt subcommand in dir and returns its combined
-// output. It is for fixtures and other setup that must change a database; it
-// does not apply the served-directory guard.
+// output. It is for fixtures, setup, and the driver's rewind of a work clone to a
+// commit, which all change a database; it does not apply the served-directory
+// guard.
 func Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd, err := command(ctx, dir, args...)
 	if err != nil {

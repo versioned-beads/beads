@@ -14,6 +14,9 @@ type runner struct {
 	store    *Store
 	observer Observer
 	q        quarantined
+	// journaled is whether the loop keeps the run's journal. Run sets it: a resume
+	// goes by the journal, and a loop with nowhere to resume from has no use for one.
+	journaled bool
 
 	verdicts       map[Verdict]int
 	gapTables      map[string]int
@@ -51,15 +54,42 @@ func (r *runner) runSteps(ctx context.Context, env stepEnv, steps []Step) error 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		out, err := replayStep(ctx, env, r.q, st)
-		if err != nil {
-			return fmt.Errorf("step %d (%s to %s): %w", st.Index, st.From.Hash, st.To.Hash, err)
-		}
-		if err := r.record(ctx, st, out); err != nil {
+		if err := r.runStep(ctx, env, st); err != nil {
 			return fmt.Errorf("step %d (%s to %s): %w", st.Index, st.From.Hash, st.To.Hash, err)
 		}
 	}
 	return nil
+}
+
+// runStep replays one step and records it. In a journaled run the step is
+// bracketed by the journal: the started entry, with the head the work clone has
+// before the step, is on disk before bd is asked for anything; the finished entry
+// is written once the step's rows are on disk, and carries the counts no row says.
+func (r *runner) runStep(ctx context.Context, env stepEnv, st Step) error {
+	if r.journaled {
+		head, err := env.WorkHead(ctx)
+		if err != nil {
+			return fmt.Errorf("read the work clone's head: %w", err)
+		}
+		started := journalEntry{Event: journalStarted, Step: st.Index, From: st.From.Hash, To: st.To.Hash, WorkHeadBefore: head}
+		if err := r.store.writeJournal(started); err != nil {
+			return err
+		}
+	}
+	out, err := replayStep(ctx, env, r.q, st)
+	if err != nil {
+		return err
+	}
+	if err := r.record(ctx, st, out); err != nil {
+		return err
+	}
+	if !r.journaled {
+		return nil
+	}
+	if err := r.store.syncRows(); err != nil {
+		return err
+	}
+	return r.store.writeJournal(journalEntry{Event: journalFinished, Step: st.Index, Derived: copyCounts(r.derived), SchemaSkew: copySkew(r.skew)})
 }
 
 // record writes a finished step's rows and tells the Observer, one issue at a
@@ -67,13 +97,13 @@ func (r *runner) runSteps(ctx context.Context, env stepEnv, steps []Step) error 
 func (r *runner) record(ctx context.Context, st Step, out *stepOutcome) error {
 	for _, g := range out.Gaps {
 		row := CoverageGapRow{
-			RunID: r.runID, FromCommit: st.From.Hash, SourceCommit: st.To.Hash,
+			RunID: r.runID, Step: st.Index, FromCommit: st.From.Hash, SourceCommit: st.To.Hash,
 			Table: g.Table, Unknown: g.Unknown, Reason: g.Reason,
 		}
 		if err := r.store.WriteCoverageGap(row); err != nil {
 			return fmt.Errorf("write coverage gap for %s: %w", g.Table, err)
 		}
-		r.gapTables[g.Table]++
+		r.foldGap(row)
 	}
 	for _, table := range out.Derived {
 		r.derived[table]++
@@ -83,27 +113,20 @@ func (r *runner) record(ctx context.Context, st Step, out *stepOutcome) error {
 	for _, oc := range out.Issues {
 		res := oc.Result
 		res.RunID = r.runID
+		res.Step = st.Index
 		if err := r.store.WriteCommitReplayResult(res); err != nil {
 			return fmt.Errorf("write result for %s: %w", res.IssueID, err)
 		}
 		if m := oc.Mismatch; m != nil {
 			row := Mismatch{
-				RunID: r.runID, SourceCommit: res.SourceCommit, IssueID: res.IssueID,
+				RunID: r.runID, Step: st.Index, SourceCommit: res.SourceCommit, IssueID: res.IssueID,
 				Category: m.Category, ExpectedJSON: m.ExpectedJSON, ActualJSON: m.ActualJSON,
 			}
 			if err := r.store.WriteMismatch(row); err != nil {
 				return fmt.Errorf("write mismatch for %s: %w", res.IssueID, err)
 			}
 		}
-		r.verdicts[res.Verdict]++
-		if res.Verdict == VerdictUncomparable {
-			r.numberFidelity++
-		}
-		if d := res.Detail; d != nil && res.Verdict == VerdictUntranslatable {
-			for _, col := range d.Columns {
-				r.gapColumns["issues."+col]++
-			}
-		}
+		r.foldResult(res)
 		if r.observer != nil {
 			ev := StepIssueResult{Step: st.Index, Merge: st.Merge, Net: st.Net, WriteLatency: oc.WriteLatency, Result: res}
 			if err := r.observer.Observe(ctx, ev); err != nil {
@@ -112,6 +135,31 @@ func (r *runner) record(ctx context.Context, st Step, out *stepOutcome) error {
 		}
 	}
 	return nil
+}
+
+// foldGap counts a coverage-gap row into the run's totals.
+//
+// foldGap and foldResult are the one place a row becomes a count. The loop folds
+// each row as it writes it, and a resume folds the rows the stopped run had
+// written through the same two, so that a resumed run counts what a run that was
+// not stopped counts, whichever of them is changed.
+func (r *runner) foldGap(row CoverageGapRow) {
+	r.gapTables[row.Table]++
+}
+
+// foldResult counts a result row into the run's totals: its verdict, the number it
+// could not compare exactly, and the columns an untranslatable issue has no bd
+// form for.
+func (r *runner) foldResult(res CommitReplayResult) {
+	r.verdicts[res.Verdict]++
+	if res.Verdict == VerdictUncomparable {
+		r.numberFidelity++
+	}
+	if d := res.Detail; d != nil && res.Verdict == VerdictUntranslatable {
+		for _, col := range d.Columns {
+			r.gapColumns["issues."+col]++
+		}
+	}
 }
 
 // Summary is what a run says about itself, so that a green run cannot be read as

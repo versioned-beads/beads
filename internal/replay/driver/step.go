@@ -38,6 +38,20 @@ type stepEnv interface {
 // anything more for it would only report the harness's own divergence.
 type quarantined map[string]string
 
+// note quarantines the issue of a result if the result is what quarantines one: a
+// step that could not be replayed for the issue, or bd's refusal of an action for
+// it. An issue that is held keeps the commit it was first held at. The step loop
+// notes every result it makes, and a resume notes the results the run had already
+// written, so that both arrive at the same set.
+func (q quarantined) note(res CommitReplayResult) {
+	switch res.Verdict {
+	case VerdictUntranslatable, VerdictRejected:
+		if _, held := q[res.IssueID]; !held {
+			q[res.IssueID] = res.SourceCommit
+		}
+	}
+}
+
 // issueOutcome is what one step came to for one issue.
 type issueOutcome struct {
 	// Result is the row for the (step, issue); RunID is left for the loop to set.
@@ -129,7 +143,6 @@ func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*step
 
 	out := &stepOutcome{Gaps: plan.Gaps, Derived: plan.Derived, Skew: compare.Skew{}}
 	outcomes := make(map[string]*issueOutcome, len(ids))
-	newlyQuarantined := map[string]string{}
 	var runnable []string
 	for _, id := range ids {
 		oc := &issueOutcome{Result: CommitReplayResult{
@@ -147,7 +160,6 @@ func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*step
 			u := untranslatable[id]
 			oc.Result.Verdict = VerdictUntranslatable
 			oc.Result.Detail = &ResultDetail{Columns: copyStrings(u.Columns), Reasons: copyStrings(u.Reasons)}
-			newlyQuarantined[id] = st.To.Hash
 		default:
 			runnable = append(runnable, id)
 		}
@@ -177,12 +189,16 @@ func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*step
 		if err == nil {
 			continue
 		}
+		// A bd that was interrupted along with the run exits non-zero too, and that is
+		// not a refusal: the run is stopping, and the step is redone on a resume.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("run %s for %s: %w", strings.Join(a.Argv, " "), a.Issue, ctxErr)
+		}
 		var refused *translate.ExecError
 		if !errors.As(err, &refused) {
 			return nil, fmt.Errorf("run %s for %s: %w", strings.Join(a.Argv, " "), a.Issue, err)
 		}
 		rejected[a.Issue] = &ResultDetail{Argv: refused.Argv, ExitCode: refused.ExitCode, Output: refused.Output}
-		newlyQuarantined[a.Issue] = st.To.Hash
 	}
 
 	var compared []string
@@ -226,11 +242,9 @@ func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*step
 		}
 	}
 
-	for id, at := range newlyQuarantined {
-		q[id] = at
-	}
 	for _, id := range ids {
 		out.Issues = append(out.Issues, *outcomes[id])
+		q.note(outcomes[id].Result)
 	}
 	return out, nil
 }

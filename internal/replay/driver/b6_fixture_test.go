@@ -336,6 +336,10 @@ outer:
 
 // ---- a run of the driver ---------------------------------------------------------
 
+// fixtureIntegrationSHA stands for the commit the integration build was made from,
+// which a caller of Run gives it: a fixture's bd is a stand-in, built from none.
+const fixtureIntegrationSHA = "0123456789abcdef0123456789abcdef01234567"
+
 // fixtureRun is one driver run over an oracle, into a fresh work clone, with the
 // bd it is given.
 type fixtureRun struct {
@@ -361,6 +365,7 @@ func newFixtureRun(t *testing.T, o *oracleHistory, integrationBin string) *fixtu
 	}
 	f.cfg = RunConfig{
 		IntegrationRef:  "HEAD",
+		IntegrationSHA:  fixtureIntegrationSHA,
 		IntegrationRepo: findRepoRoot(t),
 		OracleDataDir:   o.data,
 		WorkDir:         workDir,

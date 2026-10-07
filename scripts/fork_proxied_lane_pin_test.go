@@ -10,7 +10,8 @@ import (
 
 // This file is the fork's own (upstream has no copy, so syncs never conflict
 // on it). It pins what the fork adds to upstream's legacy proxied lane, the
-// test-proxied-cmd job of pr-risk.yml and main.yml. That job runs
+// test-proxied-cmd job of pr-risk.yml (upstream #7316 removed main.yml's copy:
+// push to main runs that tier under Bazel only). That job runs
 // .github/scripts/proxied-test-shard.sh over the 15-shard block of
 // .github/scripts/proxied-cmd-test-shards.txt, and the fork keeps it because
 // BAZEL_COVERS_FORKS is off (fork_legacy_lanes_pin_test.go). Ruling be-sudqo0
@@ -63,7 +64,8 @@ var (
 )
 
 // R9. The three timeouts of the legacy proxied lane are 25m, 26m and 30m, in
-// that order, in the shard script and in both workflows that run it.
+// that order, in the shard script and in pr-risk.yml, the one workflow that
+// still runs it.
 func TestForkLegacyProxiedLaneTimeoutBudget(t *testing.T) {
 	if os.Getenv("TEST_SRCDIR") != "" {
 		t.Skip("scripts_test's runfiles hold no .github/scripts")
@@ -94,7 +96,7 @@ func TestForkLegacyProxiedLaneTimeoutBudget(t *testing.T) {
 		scriptMinutes = max(scriptMinutes, minutes)
 	}
 
-	for _, name := range []string{"pr-risk.yml", "main.yml"} {
+	for _, name := range []string{"pr-risk.yml"} {
 		job := readCIWorkflow(t, name).job(t, forkProxiedLaneJob)
 		step := job.step(t, forkProxiedLaneStep)
 		if step.TimeoutMinutes != forkProxiedStepMinutes {

@@ -12,9 +12,10 @@ type Options struct {
 	IntegrationRef  string // git ref of the integration build under test
 	IntegrationRepo string // checkout to build the integration binary from
 	OracleDataDir   string // dolt data directory holding the historical corpus
-	WorkDir         string // bd project directory to replay into
+	WorkDir         string // bd project directory to replay into; empty or absent for a new run
 	OutDir          string // directory for the JSONL result files
 	SampleSize      int    // evenly-spaced commits to sample; 0 replays everything
+	Resume          string // id of a stopped run in OutDir to carry on; empty to start a run
 }
 
 // Run builds the integration binary under test, prepares the work project, and
@@ -23,7 +24,12 @@ type Options struct {
 // built.
 //
 // A base that already holds issues is refused first, before anything is built or
-// created, because nothing seeds the work project from it yet.
+// created, because nothing seeds the work project from it yet. So is a run that
+// cannot start: a new run over the unfinished one OutDir holds, or into a WorkDir
+// that has anything in it; a resume of a run that is not the one OutDir holds,
+// that completed, or whose oracle has changed since. A refusal changes nothing.
+// For a run that completed, the ReplayRun returned with the refusal is the one it
+// ended with.
 func (o Options) Run(ctx context.Context) (ReplayRun, error) {
 	walk, err := ReadWalk(ctx, o.OracleDataDir)
 	if err != nil {
@@ -31,6 +37,9 @@ func (o Options) Run(ctx context.Context) (ReplayRun, error) {
 	}
 	if err := checkSeedGuard(ctx, o.OracleDataDir, walk, nil); err != nil {
 		return ReplayRun{}, err
+	}
+	if completed, err := o.checkStart(walk); err != nil {
+		return completed, err
 	}
 
 	toolsDir, err := os.MkdirTemp("", "driver-core-tools-*")
@@ -40,12 +49,15 @@ func (o Options) Run(ctx context.Context) (ReplayRun, error) {
 	defer func() { _ = os.RemoveAll(toolsDir) }()
 
 	integrationBin := filepath.Join(toolsDir, "integration-bd")
-	if _, err := BuildIntegration(ctx, o.IntegrationRepo, o.IntegrationRef, "./cmd/bd", integrationBin); err != nil {
+	integrationSHA, err := BuildIntegration(ctx, o.IntegrationRepo, o.IntegrationRef, "./cmd/bd", integrationBin)
+	if err != nil {
 		return ReplayRun{}, fmt.Errorf("building integration binary: %w", err)
 	}
 
-	if err := ensureWorkProject(ctx, o.WorkDir, integrationBin); err != nil {
-		return ReplayRun{}, fmt.Errorf("preparing work project: %w", err)
+	if o.Resume == "" {
+		if err := ensureWorkProject(ctx, o.WorkDir, integrationBin); err != nil {
+			return ReplayRun{}, fmt.Errorf("preparing work project: %w", err)
+		}
 	}
 	workDataDir, err := findEmbeddedDoltDir(o.WorkDir)
 	if err != nil {
@@ -54,6 +66,7 @@ func (o Options) Run(ctx context.Context) (ReplayRun, error) {
 
 	return Run(ctx, RunConfig{
 		IntegrationRef:  o.IntegrationRef,
+		IntegrationSHA:  integrationSHA,
 		IntegrationRepo: o.IntegrationRepo,
 		OracleDataDir:   o.OracleDataDir,
 		WorkDir:         o.WorkDir,
@@ -61,7 +74,23 @@ func (o Options) Run(ctx context.Context) (ReplayRun, error) {
 		OutDir:          o.OutDir,
 		SampleSize:      o.SampleSize,
 		Tools:           Tools{IntegrationBin: integrationBin},
+		Resume:          o.Resume,
 	})
+}
+
+// checkStart refuses what can be refused without a build, so that a refusal costs
+// nothing and leaves nothing behind. A run that stopped and was not resumed is
+// named before a work directory that has something in it, because it is the reason
+// for it. A completed run comes back with the row it ended with.
+func (o Options) checkStart(walk *Walk) (ReplayRun, error) {
+	if o.Resume == "" {
+		if err := checkNoUnfinishedRun(o.OutDir, o.WorkDir); err != nil {
+			return ReplayRun{}, err
+		}
+		return ReplayRun{}, checkWorkDirEmpty(o.WorkDir)
+	}
+	_, completed, err := checkResume(o.OutDir, o.Resume, walk, o.SampleSize)
+	return completed, err
 }
 
 // ensureWorkProject initializes workDir as a bd project via integrationBin if

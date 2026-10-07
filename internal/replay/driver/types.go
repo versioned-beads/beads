@@ -20,7 +20,7 @@ type ReplayRun struct {
 	Mode           string    `json:"mode"` // "exhaustive" | "sampled"
 	SampleSize     int       `json:"sample_size,omitempty"`
 	StartedAt      time.Time `json:"started_at"`
-	FinishedAt     time.Time `json:"finished_at,omitempty"`
+	FinishedAt     time.Time `json:"finished_at,omitzero"`
 	Status         string    `json:"status"` // "running" | "completed" | "failed"
 }
 
@@ -57,9 +57,11 @@ var verdicts = []Verdict{
 // replaying one historical commit step for one issue and comparing it against
 // the oracle. Written for every (step, issue) pair the run visits, matched or
 // not. SourceCommit is the commit the step ends at, FromCommit the one it starts
-// from.
+// from, and Step is the step's position in the run, from 0: the journal names a
+// step the same way, which is how a resume tells whose rows are whose.
 type CommitReplayResult struct {
 	RunID         string        `json:"run_id"`
+	Step          int           `json:"step"`
 	FromCommit    string        `json:"from_commit"`
 	SourceCommit  string        `json:"source_commit"`
 	IssueID       string        `json:"issue_id"`
@@ -92,6 +94,7 @@ type ResultDetail struct {
 // The run goes on, and the hole is visible, one row per step and table.
 type CoverageGapRow struct {
 	RunID        string `json:"run_id"`
+	Step         int    `json:"step"`
 	FromCommit   string `json:"from_commit"`
 	SourceCommit string `json:"source_commit"`
 	Table        string `json:"table"`
@@ -104,6 +107,7 @@ type CoverageGapRow struct {
 // non-matching comparison.
 type Mismatch struct {
 	RunID        string          `json:"run_id"`
+	Step         int             `json:"step"`
 	SourceCommit string          `json:"source_commit"`
 	IssueID      string          `json:"issue_id"`
 	Category     string          `json:"category"`

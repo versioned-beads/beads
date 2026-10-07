@@ -7,6 +7,19 @@ import (
 	"path/filepath"
 )
 
+// The files a run keeps in its output directory. run.json and journal.jsonl are
+// the run's own bookkeeping, see runrecord.go and journal.go; the others are its
+// results.
+const (
+	fileRunRecord  = "run.json"
+	fileJournal    = "journal.jsonl"
+	fileRuns       = "replay_runs.jsonl"
+	fileResults    = "commit_replay_results.jsonl"
+	fileMismatches = "mismatches.jsonl"
+	fileGaps       = "coverage_gaps.jsonl"
+	fileSummary    = "summary.json"
+)
+
 // Store is a dependency-free, append-only JSON-Lines persistence layer for the
 // ERD's entities and the run's coverage-gap rows, which also holds the run's
 // summary. JSONL rather than a SQL engine because NFR1/NFR2 forbid ever opening
@@ -26,6 +39,13 @@ func NewStore(dir string) (*Store, error) {
 }
 
 func (s *Store) appendJSONLine(filename string, v any) error {
+	return s.appendLine(filename, v, false)
+}
+
+// appendLine appends v to the file as one JSON line. With durable it does not
+// return until the line is on disk, which is what a journal entry needs: the line
+// is there before what it announces happens.
+func (s *Store) appendLine(filename string, v any, durable bool) error {
 	line, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshaling %s entry: %w", filename, err)
@@ -38,19 +58,24 @@ func (s *Store) appendJSONLine(filename string, v any) error {
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		return fmt.Errorf("writing %s: %w", filename, err)
 	}
+	if durable {
+		if err := f.Sync(); err != nil {
+			return fmt.Errorf("syncing %s: %w", filename, err)
+		}
+	}
 	return nil
 }
 
 func (s *Store) WriteReplayRun(run ReplayRun) error {
-	return s.appendJSONLine("replay_runs.jsonl", run)
+	return s.appendJSONLine(fileRuns, run)
 }
 
 func (s *Store) WriteCommitReplayResult(crr CommitReplayResult) error {
-	return s.appendJSONLine("commit_replay_results.jsonl", crr)
+	return s.appendJSONLine(fileResults, crr)
 }
 
 func (s *Store) WriteMismatch(mm Mismatch) error {
-	return s.appendJSONLine("mismatches.jsonl", mm)
+	return s.appendJSONLine(fileMismatches, mm)
 }
 
 func (s *Store) WriteMetricSample(ms MetricSample) error {
@@ -59,7 +84,7 @@ func (s *Store) WriteMetricSample(ms MetricSample) error {
 
 // WriteCoverageGap appends one (step, table) coverage-gap row.
 func (s *Store) WriteCoverageGap(row CoverageGapRow) error {
-	return s.appendJSONLine("coverage_gaps.jsonl", row)
+	return s.appendJSONLine(fileGaps, row)
 }
 
 // WriteSummary writes the run's summary as summary.json, replacing an earlier one.
@@ -68,8 +93,28 @@ func (s *Store) WriteSummary(sum Summary) error {
 	if err != nil {
 		return fmt.Errorf("marshaling the summary: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(s.dir, "summary.json"), append(data, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.dir, fileSummary), append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("writing summary.json: %w", err)
+	}
+	return nil
+}
+
+// path is where the store keeps the named file.
+func (s *Store) path(filename string) string { return filepath.Join(s.dir, filename) }
+
+// writeJournal appends an entry to the run's journal and returns once it is on
+// disk.
+func (s *Store) writeJournal(e journalEntry) error {
+	return s.appendLine(fileJournal, e, true)
+}
+
+// syncRows forces the files a step's rows go to onto disk. The journal calls a
+// step finished only after this, so that a finished step never lacks a row.
+func (s *Store) syncRows() error {
+	for _, name := range []string{fileResults, fileMismatches, fileGaps} {
+		if err := syncFile(s.path(name)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

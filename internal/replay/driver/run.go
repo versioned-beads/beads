@@ -20,22 +20,31 @@ type Tools struct {
 }
 
 // RunConfig is everything one Run invocation needs: which integration build to
-// test (IntegrationRef/IntegrationRepo), which historical corpus is the oracle
-// (OracleDataDir), which fresh project to replay mutations into
+// test (IntegrationRef/IntegrationRepo/IntegrationSHA), which historical corpus
+// is the oracle (OracleDataDir), which fresh project to replay mutations into
 // (WorkDir/WorkDataDir), where to persist results (OutDir), and the binary to
 // replay through. SampleSize <= 0 means UC2's exhaustive loop; SampleSize > 0
 // selects that many evenly-spaced commits (AF1 sampled mode).
 type RunConfig struct {
 	IntegrationRef  string
 	IntegrationRepo string
-	OracleDataDir   string
-	WorkDir         string
-	WorkDataDir     string
-	OutDir          string
-	SampleSize      int
-	Tools           Tools
+	// IntegrationSHA is the commit the integration binary was built from, as
+	// BuildIntegration returned it. The run records this commit and does not
+	// resolve IntegrationRef again, so what it records is what was built, whatever
+	// the ref has done since. It is required.
+	IntegrationSHA string
+	OracleDataDir  string
+	WorkDir        string
+	WorkDataDir    string
+	OutDir         string
+	SampleSize     int
+	Tools          Tools
+	// Resume, when set, is the id of a run that stopped in OutDir. Run carries that
+	// run on from the step its journal says it got to instead of starting one.
+	Resume string
 	// Observer, when set, is told about every (step, issue) result as it is
-	// written. It may be nil.
+	// written. It may be nil. A resumed run does not tell it again about the steps
+	// the stopped run finished.
 	Observer Observer
 	// Seed is the record of the seeding that gave the work clone the oracle's base
 	// state, nil when the work clone was not seeded. A base that holds issues is
@@ -62,6 +71,11 @@ var ErrLegacyRowsPresent = errors.New("the work clone holds issues created while
 // everything the replay creates records versions. A base that already holds
 // issues is refused, before anything is written, unless the work clone was
 // seeded from it.
+//
+// A run says it is running before it does anything a crash could cut short, and
+// keeps a journal of its steps, so a run that stopped can be carried on with
+// cfg.Resume: see resumeRun. Starting a run over the directory of one that
+// stopped and was not resumed is refused. A run that completed is never run again.
 func Run(ctx context.Context, cfg RunConfig) (ReplayRun, error) {
 	walk, err := ReadWalk(ctx, cfg.OracleDataDir)
 	if err != nil {
@@ -70,54 +84,51 @@ func Run(ctx context.Context, cfg RunConfig) (ReplayRun, error) {
 	if err := checkSeedGuard(ctx, cfg.OracleDataDir, walk, cfg.Seed); err != nil {
 		return ReplayRun{}, fmt.Errorf("run: %w", err)
 	}
-
-	sha, err := runGit(ctx, cfg.IntegrationRepo, "rev-parse", cfg.IntegrationRef)
-	if err != nil {
-		return ReplayRun{}, fmt.Errorf("run: resolve integration ref %q: %w", cfg.IntegrationRef, err)
-	}
-
-	mode := "exhaustive"
-	if cfg.SampleSize > 0 {
-		mode = "sampled"
-	}
-	run := ReplayRun{
-		ID:             GenerateRunID(),
-		IntegrationRef: cfg.IntegrationRef,
-		IntegrationSHA: sha,
-		Mode:           mode,
-		SampleSize:     cfg.SampleSize,
-		StartedAt:      time.Now().UTC(),
-		Status:         "running",
-	}
-
-	store, err := NewStore(cfg.OutDir)
-	if err != nil {
-		return run, fmt.Errorf("run: %w", err)
+	if cfg.IntegrationSHA == "" {
+		return ReplayRun{}, errors.New("run: no integration SHA: the caller builds the integration and gives the commit it built")
 	}
 
 	steps := walk.Steps(cfg.SampleSize)
-	r := newRunner(run.ID, store, cfg.Observer)
-	loopErr := replayHistory(ctx, cfg, r, steps)
+	var b begun
+	if cfg.Resume == "" {
+		b, err = beginRun(cfg, walk)
+	} else {
+		b, err = resumeRun(ctx, cfg, walk, steps)
+	}
+	if err != nil {
+		return b.run, fmt.Errorf("run: %w", err)
+	}
 
+	loopErr := replayHistory(ctx, cfg, b.r, steps[b.first:])
+	return finishRun(cfg, b, walk, steps, loopErr)
+}
+
+// finishRun closes a run, whose loop ended with loopErr: its summary, run.json and
+// last, its completed or failed row, which is what says the run is over. A close
+// that cannot be written fails a run that had not failed.
+func finishRun(cfg RunConfig, b begun, walk *Walk, steps []Step, loopErr error) (ReplayRun, error) {
+	run := b.run
 	run.Status = "completed"
 	if loopErr != nil {
 		run.Status = "failed"
 	}
 	run.FinishedAt = time.Now().UTC()
-	if err := store.WriteSummary(r.summarize(run, walk, steps, cfg.Seed)); err != nil {
-		if loopErr == nil {
-			loopErr = fmt.Errorf("writing the summary: %w", err)
+
+	settle := func(what string, err error) {
+		switch {
+		case err == nil:
+		case loopErr == nil:
+			loopErr = fmt.Errorf("%s: %w", what, err)
 			run.Status = "failed"
-		} else {
-			loopErr = fmt.Errorf("%w (and writing the summary: %v)", loopErr, err)
+		default:
+			loopErr = fmt.Errorf("%w (and %s: %v)", loopErr, what, err)
 		}
 	}
-	if err := store.WriteReplayRun(run); err != nil {
-		if loopErr == nil {
-			return run, fmt.Errorf("run: writing completed replay run: %w", err)
-		}
-		return run, fmt.Errorf("run: %w (and failed to record failed status: %v)", loopErr, err)
-	}
+	settle("writing the summary", b.store.WriteSummary(b.r.summarize(run, walk, steps, cfg.Seed)))
+	rec := b.rec
+	rec.Status = run.Status
+	settle("writing "+fileRunRecord, writeRunRecord(cfg.OutDir, rec))
+	settle("writing the "+run.Status+" row", b.store.WriteReplayRun(run))
 	if loopErr != nil {
 		return run, fmt.Errorf("run: %w", loopErr)
 	}
