@@ -207,6 +207,9 @@ func TestB8SeedRecipe(t *testing.T) {
 	if rec.LinkedEngine != cfg.LinkedEngine || rec.LinkedEngine == "" {
 		t.Errorf("linked_engine = %q, want %q", rec.LinkedEngine, cfg.LinkedEngine)
 	}
+	// A feasibility result is only as good as the tools it ran on, so the log names them.
+	t.Logf("dolt_cli_version = %s", rec.DoltCLIVersion)
+	t.Logf("linked_engine = %s", rec.LinkedEngine)
 
 	// R4 and R5: the identity travels, in the fresh-init shape.
 	var meta map[string]string
