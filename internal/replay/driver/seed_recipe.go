@@ -255,9 +255,10 @@ func LinkedEngine(goMod []byte) (string, error) {
 }
 
 // refusalClassOf names the refusal the product's own words in a command's output
-// make, or "" when they make none. It is the one place the harness reads the
-// product's text, and it reads two phrases of it: the workspace identity check,
-// and the gate that will not migrate a store that looks remote-backed.
+// make, or "" when they make none. It reads two phrases: the workspace identity
+// check's, and the gate's that will not migrate a store that looks remote-backed.
+// With unversionableCount, which reads a third, it is the only place the harness
+// reads the product's text.
 func refusalClassOf(output string) string {
 	switch {
 	case strings.Contains(output, "workspace identity mismatch detected"):
@@ -266,6 +267,18 @@ func refusalClassOf(output string) string {
 		return RefusedRemoteMigrateGate
 	}
 	return ""
+}
+
+// seedRefusalOf is the refusal a seeded copy makes of a command the bd under test
+// ran on it, when its own words are one of the classes above: the *SeedRefused of
+// that class, carrying the command's report, and nil for any other failure. The
+// detail is the harness's own words; the product's are in the report.
+func seedRefusalOf(exit *translate.ExecError) *SeedRefused {
+	class := refusalClassOf(exit.Output)
+	if class == "" {
+		return nil
+	}
+	return &SeedRefused{Class: class, Detail: "the product refused a write on the seeded copy", Exit: exit}
 }
 
 // exitRefusal is the refusal of class made by a child that exited above zero. The

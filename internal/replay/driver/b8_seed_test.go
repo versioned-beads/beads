@@ -462,6 +462,9 @@ func buildSeededFlow(t *testing.T, f *seededFlow, v seedVariant) {
 
 	f.stage = "replaying"
 	runWork := filepath.Join(root, "run", "work")
+	if err := os.MkdirAll(filepath.Dir(runWork), 0o755); err != nil {
+		t.Fatalf("creating the run's directory: %v", err)
+	}
 	copyProject(t, cfg.WorkDir, runWork)
 	seedForRun := rec
 	rcfg := fr.cfg

@@ -21,6 +21,13 @@ type runner struct {
 	derived        map[string]int
 	skew           compare.Skew
 	numberFidelity int
+
+	// baseline and enableRefused are what a seeded run found before its first step:
+	// how the work clone compared with the oracle at the base, and whether the
+	// product refused to turn versioned history on. Both stay nil on a run that did
+	// not find them.
+	baseline      *BaselineFinding
+	enableRefused *EnableRefusal
 }
 
 func newRunner(runID string, store *Store, observer Observer) *runner {
@@ -192,6 +199,8 @@ func (r *runner) summarize(run ReplayRun, w *Walk, steps []Step, seed *SeedRecor
 		SchemaSkew:     copySkew(r.skew),
 		NumberFidelity: r.numberFidelity,
 		Seed:           seed,
+		Baseline:       r.baseline,
+		EnableRefused:  r.enableRefused,
 	}
 }
 

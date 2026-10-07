@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
+	"os/exec"
 	"time"
 
 	"github.com/steveyegge/beads/internal/replay/doltcli"
@@ -124,14 +124,62 @@ func Run(ctx context.Context, cfg RunConfig) (ReplayRun, error) {
 	return run, nil
 }
 
-// replayHistory switches versioned history on in the work clone, replays the
-// steps, and checks that every issue it made records versions.
+// replayHistory replays the steps into the work clone and ends the run with the
+// check that nothing in it can reach another store. A seeded run first compares
+// the clone with the oracle at the base. Then versioned history is switched on, the
+// steps are replayed, and every issue the run made is checked to record versions.
+//
+// The outbound check runs whatever became of the steps, unless the run was
+// interrupted, and a failure of the steps and a target left behind are both
+// reported when both happened.
 func replayHistory(ctx context.Context, cfg RunConfig, r *runner, steps []Step) error {
-	if err := enableVersionedHistory(ctx, cfg); err != nil {
+	err := replaySteps(ctx, cfg, r, steps)
+	if ctx.Err() != nil {
 		return err
 	}
-	if err := r.runSteps(ctx, realEnv{cfg: cfg}, steps); err != nil {
+	switch outbound := checkNoOutbound(ctx, cfg.WorkDataDir); {
+	case outbound == nil:
 		return err
+	case err == nil:
+		return outbound
+	default:
+		return errors.Join(err, outbound)
+	}
+}
+
+// replaySteps is the part of a run between the seed and the outbound check.
+func replaySteps(ctx context.Context, cfg RunConfig, r *runner, steps []Step) error {
+	env := realEnv{cfg: cfg}
+	if cfg.Seed != nil {
+		if err := checkSeedHead(ctx, cfg); err != nil {
+			return err
+		}
+		// The baseline is the start of a run. A run carried on from its journal has
+		// already had it, and its first step is not the walk's.
+		if len(steps) > 0 && steps[0].Index == 0 {
+			base := steps[0].From.Hash
+			ids, err := issueIDsAt(ctx, cfg.OracleDataDir, base)
+			if err != nil {
+				return fmt.Errorf("baseline: %w", err)
+			}
+			if err := r.compareBaseline(ctx, env, base, ids); err != nil {
+				return err
+			}
+		}
+	}
+	refusal, err := enableVersionedHistory(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	r.enableRefused = refusal
+	if err := r.runSteps(ctx, env, steps); err != nil {
+		return err
+	}
+	if refusal != nil {
+		// The product would not turn history on and the run says so: every row it
+		// made is legacy, and the check has nothing to find that the summary does
+		// not already say.
+		return nil
 	}
 	return verifyNoLegacyRows(ctx, cfg)
 }
@@ -139,28 +187,47 @@ func replayHistory(ctx context.Context, cfg RunConfig, r *runner, steps []Step) 
 // enableVersionedHistory switches versioned history on in the work clone through
 // the bd under test. It must happen before the first issue is created: a row made
 // while history is off is legacy for its whole life and never records.
-func enableVersionedHistory(ctx context.Context, cfg RunConfig) error {
-	if out, err := execBd(ctx, cfg.Tools.IntegrationBin, cfg.WorkDir, "config", "set", "versioned-history.enabled", "true"); err != nil {
-		return fmt.Errorf("switching versioned history on in the work clone: %w\n%s", err, out)
+//
+// A seeded clone can hold a value a version could not record, and the product then
+// refuses to turn history on. That is a finding and not a failure of the run: it is
+// returned as the refusal, with the number of issues the product named, and the run
+// goes on without versioning. Any other refusal of a seeded clone is a *SeedRefused
+// of its class. Every other failure is an error, and a clone that was not seeded
+// holds nothing the product could refuse for.
+func enableVersionedHistory(ctx context.Context, cfg RunConfig) (*EnableRefusal, error) {
+	argv := []string{"config", "set", "versioned-history.enabled", "true"}
+	out, err := execBd(ctx, cfg.Tools.IntegrationBin, cfg.WorkDir, argv...)
+	if err == nil {
+		return nil, nil
 	}
-	return nil
+	var exit *exec.ExitError
+	if cfg.Seed != nil && errors.As(err, &exit) && exit.ExitCode() > 0 {
+		if n, ok := unversionableCount(string(out)); ok {
+			return &EnableRefusal{Count: n}, nil
+		}
+		if refused := seedRefusalOf(&translate.ExecError{Argv: argv, ExitCode: exit.ExitCode(), Output: string(out), Err: err}); refused != nil {
+			return nil, refused
+		}
+	}
+	return nil, fmt.Errorf("switching versioned history on in the work clone: %w\n%s", err, out)
 }
 
 // verifyNoLegacyRows is the check that the switch took. History that silently
 // stayed off would leave every created row legacy and a run that measured nothing
 // it claims to, so a legacy row is a harness error.
+//
+// A seeded clone starts with legacy rows, which are the base's issues as they were
+// and which versioned history never records. They are the issues of the seed's own
+// head, so they are the ones the check leaves out; any other row without a
+// participation generation was made by the run.
 func verifyNoLegacyRows(ctx context.Context, cfg RunConfig) error {
-	const query = "SELECT COUNT(*) FROM issues WHERE participation_generation IS NULL"
-	_, rows, err := doltcli.Query(ctx, cfg.WorkDataDir, query)
-	if err != nil {
-		return fmt.Errorf("checking the work clone for legacy rows: %w", err)
+	query := "SELECT COUNT(*) FROM issues WHERE participation_generation IS NULL"
+	if cfg.Seed != nil {
+		query += " AND id NOT IN (SELECT id FROM issues AS OF " + doltcli.SQLQuote(cfg.Seed.SeedHead) + ")"
 	}
-	if len(rows) != 1 || len(rows[0]) != 1 {
-		return fmt.Errorf("checking the work clone for legacy rows: unexpected result %v", rows)
-	}
-	n, err := strconv.Atoi(rows[0][0].Text)
+	n, err := queryCount(ctx, cfg.WorkDataDir, "checking the work clone for legacy rows", query)
 	if err != nil {
-		return fmt.Errorf("checking the work clone for legacy rows: %q is not a count", rows[0][0].Text)
+		return err
 	}
 	if n > 0 {
 		return fmt.Errorf("%w: %d issues", ErrLegacyRowsPresent, n)
@@ -182,8 +249,19 @@ func (e realEnv) OracleView(ctx context.Context, ref, issue string) (*oracle.Vie
 	return oracle.ReadView(ctx, e.cfg.OracleDataDir, ref, issue)
 }
 
+// Execute runs one action through the bd under test. On a seeded clone, a bd that
+// refuses for the clone's identity or for the look of a remote-backed store is the
+// seeding's refusal and not the step's: it is a *SeedRefused, which ends the run,
+// where any other refusal is a rejected write.
 func (e realEnv) Execute(ctx context.Context, action translate.Action) error {
-	return translate.ExecuteWith(ctx, e.cfg.Tools.IntegrationBin, e.cfg.WorkDir, action)
+	err := translate.ExecuteWith(ctx, e.cfg.Tools.IntegrationBin, e.cfg.WorkDir, action)
+	var exit *translate.ExecError
+	if e.cfg.Seed != nil && errors.As(err, &exit) {
+		if refused := seedRefusalOf(exit); refused != nil {
+			return refused
+		}
+	}
+	return err
 }
 
 func (e realEnv) WorkHead(ctx context.Context) (string, error) {
