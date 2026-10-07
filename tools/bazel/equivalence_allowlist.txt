@@ -23,11 +23,13 @@ scripts/oracle-query TestB1OneDenyList skip  # builds the CLI from source; runs 
 scripts/scenarios TestPackageDoesNotEmbedOrListScenarios skip  # reads the scenario files shipped next to the sources; runs under go test
 scripts/scenarios TestREADMEDocumentsTheContract skip  # reads the scenario files shipped next to the sources; runs under go test
 
-# Fork-only tests in an upstream package (scripts/fork_proxied_lane_pin_test.go;
-# upstream has no copy). Their inputs, .github/scripts and cmd/bd, are not in
-# //scripts:scripts_test's runfiles, so they skip there (be-sudqo0, R8 and R9).
+# Fork-only tests in an upstream package (scripts/fork_proxied_lane_pin_test.go
+# and scripts/fork_heavy_tiers_pin_test.go; upstream has no copy). Their inputs,
+# .github/scripts, cmd/bd and git history, are not in //scripts:scripts_test's
+# runfiles, so they skip there (be-sudqo0, R8 and R9; be-fxkoxb, W1).
 scripts TestForkLegacyProxiedLaneTimeoutBudget skip  # reads .github/scripts/proxied-test-shard.sh, not in the runfiles; runs under go test
 scripts TestForkLegacyProxiedBlockCoversEveryTest skip  # runs scripts/ci/gen_proxied_shard_manifest.py --check over cmd/bd, not in the runfiles; runs under go test
+scripts TestForkHeavyTiersLiftMatchesSourceBlobs skip  # compares fork-heavy-tiers.yml with git blobs of the base commit, history is not in the runfiles; runs under go test
 
 # The in-test `go build` of bd that this test guards does not happen under
 # Bazel (bd comes in through BEADS_TEST_BD_BINARY); go test still runs it.

@@ -40,6 +40,7 @@ go_test(
         "complexity_script_test.go",
         "conformance_script_test.go",
         "embedded_shard_count_test.go",
+        "fork_heavy_tiers_pin_test.go",
         "fork_legacy_lanes_pin_test.go",
         "fork_macos_lane_pin_test.go",
         "fork_proxied_lane_pin_test.go",
