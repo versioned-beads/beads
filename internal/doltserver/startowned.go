@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"time"
 )
@@ -120,7 +121,7 @@ type startupProbe struct {
 	logPath   string
 	logOffset int64
 	// readyLineLogged is true when the child's log level lets dolt log
-	// DoltReadyLine (debug mode); the default warning level does not.
+	// DoltReadyLine; the default warning level does not.
 	readyLineLogged bool
 	timeout         time.Duration
 	// owner is listenerOwnership; tests replace it.
@@ -144,8 +145,9 @@ const (
 // dolt's ready line in the child's output when its log level emits one, or
 // else by the listening socket belonging to the child's process tree (Linux,
 // via /proc). When the socket is shown to belong to someone else the wait
-// ends at once with ErrPortInUse. Where neither proof is available the
-// greeting decides, as before, unless the log level promises a ready line.
+// ends at once with ErrPortInUse. On Darwin a greeting without a known
+// listener owner is not enough; on other platforms where neither proof is
+// available the greeting decides, unless the log level promises a ready line.
 // Either way a child that exits, or says its port is taken, ends the wait,
 // with ErrPortInUse in the latter case.
 func awaitOwnedListener(srv *startedServer, p startupProbe) error {
@@ -174,7 +176,7 @@ func awaitOwnedListener(srv *startedServer, p startupProbe) error {
 				owned, known = owner(srv.pid, p.port)
 			}
 			switch {
-			case owned || (!known && !p.readyLineLogged):
+			case owned || (!known && !p.readyLineLogged && runtime.GOOS != "darwin"):
 				if err := childStartupFailure(srv, &tail, watch, addr); err != nil {
 					return err
 				}
@@ -206,6 +208,10 @@ func awaitOwnedListener(srv *startedServer, p startupProbe) error {
 
 func startupTimeout(p startupProbe, addr string, pid int, answeredUnproven bool) error {
 	if answeredUnproven {
+		if !p.readyLineLogged {
+			return fmt.Errorf("timeout after %s: something answered at %s, but ownership of dolt sql-server (PID %d) could not be proved; check that macOS lsof and ps can inspect the listener",
+				p.timeout, addr, pid)
+		}
 		return fmt.Errorf("timeout after %s: something answered at %s, but dolt sql-server (PID %d) never logged %q, "+
 			"which proves the listener is its own at log level debug; if a wrapper filters dolt's output, turn off debug mode (BEADS_DOLT_DEBUG, dolt.debug)",
 			p.timeout, addr, pid, DoltReadyLine)

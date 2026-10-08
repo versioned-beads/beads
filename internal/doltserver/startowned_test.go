@@ -110,8 +110,8 @@ func TestAwaitOwnedListener_ForeignListenerIsNotReady(t *testing.T) {
 		{name: "ownership says foreign", owner: func(int, int) (bool, bool) { return false, true }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.owner == nil && runtime.GOOS != "linux" {
-				t.Skip("listener ownership is only provable on linux")
+			if tc.owner == nil && runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+				t.Skip("listener ownership is only provable on linux or darwin")
 			}
 			port := foreignGreeter(t)
 			logPath := filepath.Join(t.TempDir(), "dolt-server.log")
@@ -166,7 +166,7 @@ func TestAwaitOwnedListener_OwnListenerIsReady(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("awaitOwnedListener on the child's own listener: %v", err)
 	}
-	if runtime.GOOS == "linux" {
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 		if owned, known := listenerOwnership(srv.pid, port); !owned || !known {
 			t.Errorf("listenerOwnership(child) = (%v, %v), want (true, true)", owned, known)
 		}
@@ -201,13 +201,13 @@ func TestAwaitOwnedListener_ChildExitIsReported(t *testing.T) {
 	}
 }
 
-// TestAwaitOwnedListener_ProvenForeignEndsWaitAtOnce: when /proc proves the
+// TestAwaitOwnedListener_ProvenForeignEndsWaitAtOnce: when the OS proves the
 // greeting came from another process, the wait does not sit out a slow
 // child's startup (which under load can outlast the ready timeout and turn a
 // movable port into a hard failure); it returns ErrPortInUse straight away.
 func TestAwaitOwnedListener_ProvenForeignEndsWaitAtOnce(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("listener ownership is only provable on linux")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("listener ownership is only provable on linux or darwin")
 	}
 	port := foreignGreeter(t)
 	logPath := filepath.Join(t.TempDir(), "dolt-server.log")
