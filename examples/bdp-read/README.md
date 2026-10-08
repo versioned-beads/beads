@@ -7,7 +7,7 @@ installing. It implements the BDP v0 Read shapes pinned by this repository to
 It is an example consumer, not a complete protocol validator or SDK.
 
 Start the graph BDP service separately using the repository's
-[HTTP preview instructions](../../docs/reference/graph-preview.md#bdp-read-from-scripts). Its configured
+[HTTP read instructions](../../docs/reference/graph-cli-specification-draft.md#bdp-read-from-scripts). Its configured
 Scope must be reachable at the canonical URL. The preview serves an initialized
 ordinary shared-server graph workspace; embedded HTTP serving is not supported.
 

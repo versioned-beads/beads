@@ -213,7 +213,7 @@ This is useful for:
 
 The integration branch includes an experimental Memory/Issue graph preview.
 Start with the [graph CLI guide](docs/reference/graph-cli.md) for fresh-workspace
-setup and commands; use the [technical reference](docs/reference/graph-preview.md)
+setup and commands; use the [Graph CLI Specification (Draft)](docs/reference/graph-cli-specification-draft.md)
 for the exact current capability matrix and limits.
 The [BDP Python example](examples/bdp-read/) reads and enumerates its records over HTTP.
 
