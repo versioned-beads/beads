@@ -1,0 +1,526 @@
+name: Fork Heavy Tiers
+
+# This repository's own workflow (upstream has no copy, so syncs never conflict
+# on it; rule M1, be-6i64d8). It keeps the heavy test tiers running on every
+# pull request into integration while the upstream sync replaces pr-risk.yml's
+# copy of them: Embedded Dolt (build, storage, conformance and cmd shards),
+# Proxied Dolt cmd shards, Server Dolt (conformance and full-suite shards) and
+# the managed-local proxied lifecycle lane. Work package W1, be-fxkoxb; ruling
+# be-4y7b5s sections 3.4, 5.1 rule 4, 8.3 and 11, as amended by be-bg8llq.
+#
+# The eight jobs are lifted, not written: they come out of the git blobs of
+# pr-risk.yml (seven jobs) and proxied-local-smoke.yml (managed-local-smoke) at
+# 356275a13290, vb/integration when W1 was cut, with five edits and nothing else:
+#   1. the job name gains the prefix "Fork Heavy ";
+#   2. needs is cut down to build-embedded (build-embedded and
+#      managed-local-smoke have none);
+#   3. the tier if: is dropped, so every job runs on every pull request;
+#   4. a runs-on that named a pooled runner becomes ubuntu-latest;
+#   5. managed-local-smoke alone loses its pooled-runner cache unit, the comment
+#      above it and its two steps, which leaves six of its eight.
+# Job ids and step names are the sources', so the proxied-lane pins in
+# scripts/fork_proxied_lane_pin_test.go read test-proxied-cmd here as they read
+# it in pr-risk.yml. The comments that sat between jobs in pr-risk.yml describe
+# its tier selection and are not carried.
+#
+# "Fork Heavy Tiers / Required" fails unless every other job's result is exactly
+# success, skipped included: a skipped heavy tier is the silent gap this
+# workflow exists to close.
+#
+# It runs beside pr.yml and pr-risk.yml, not inside them. It is not in CI Gate's
+# needs, so it can neither delay nor fail that gate; read its result as the
+# heavy-tier signal it is. scripts/fork_heavy_tiers_pin_test.go pins this file
+# and its header lists what is retired together with it.
+
+on:
+  pull_request:
+    branches: [ integration ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BD_DISABLE_METRICS: "1"
+  BD_DISABLE_EVENT_FLUSH: "1"
+
+jobs:
+  build-embedded:
+    name: Fork Heavy Build (Embedded Dolt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Go
+        id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: beads-go-mod-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: beads-go-mod-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-
+
+      - name: Restore race Go build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-cache/race
+          key: beads-go-build-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-base-gms_pure_go-race-${{ github.sha }}
+          restore-keys: beads-go-build-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-base-gms_pure_go-race-
+
+      - name: Restore non-race Go build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-cache/non-race
+          key: beads-go-build-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-base-gms_pure_go-non-race-${{ github.sha }}
+          restore-keys: beads-go-build-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-base-gms_pure_go-non-race-
+
+      - name: Build embedded bd binary
+        env:
+          GOCACHE: ${{ runner.temp }}/go-cache/race
+        run: go build -tags gms_pure_go -race -o /tmp/bd-embedded-test ./cmd/bd/
+
+      - name: Build embedded storage test binary
+        env:
+          GOCACHE: ${{ runner.temp }}/go-cache/race
+        run: go test -tags gms_pure_go -race -c -o /tmp/embeddeddolt-test ./internal/storage/embeddeddolt/
+
+      - name: Build embedded cmd test binary
+        env:
+          GOCACHE: ${{ runner.temp }}/go-cache/race
+        run: go test -tags gms_pure_go -race -c -o /tmp/bd-cmd-test ./cmd/bd/
+
+      # Non-race bd used as the proxied-server test subprocess. The proxied
+      # tests spawn bd many times per sub-test; a -race subprocess would slow
+      # every invocation, so build a plain binary for BEADS_TEST_BD_BINARY.
+      - name: Build proxied bd subprocess binary
+        env:
+          GOCACHE: ${{ runner.temp }}/go-cache/non-race
+        run: go build -tags gms_pure_go -o /tmp/bd-proxied ./cmd/bd/
+
+      # Server-Dolt conformance binary. No -race: the Dolt server runs
+      # out-of-process in a container, and omitting it keeps the run inside the
+      # job's timeout. The dolt package self-skips without the docker image, so
+      # the binary is harmless if its job is gated off.
+      - name: Build server Dolt conformance test binary
+        env:
+          GOCACHE: ${{ runner.temp }}/go-cache/non-race
+        run: go test -tags=integration,gms_pure_go -c -o /tmp/dolt-conformance-test ./internal/storage/dolt/
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: embedded-test-binaries
+          path: |
+            /tmp/bd-embedded-test
+            /tmp/embeddeddolt-test
+            /tmp/bd-cmd-test
+            /tmp/bd-proxied
+            /tmp/dolt-conformance-test
+          retention-days: 1
+
+  test-embedded-storage:
+    name: Fork Heavy Test (Embedded Dolt Storage ${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: [build-embedded]
+    runs-on: ubuntu-latest
+    # The shard script's -test.timeout=20m plus setup. At 15m the 1000-item
+    # batch-apply cap cancelled shard 2/5: TestBatchApplyContract took 604s
+    # under -race (97s at the 100-item cap, main run 35862663577) and the
+    # shard hit 15m twice (run 36807191489). The manifest now pins the heavy
+    # tests apart; the heaviest shard projects to ~13m.
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: embedded-test-binaries
+          path: /tmp/
+
+      - name: Fix permissions
+        run: chmod +x /tmp/embeddeddolt-test
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@beads.test"
+
+      - name: Test
+        env:
+          BEADS_TEST_EMBEDDED_DOLT: "1"
+          BEADS_TEST_EMBEDDED_TEST_BINARY: /tmp/embeddeddolt-test
+        # Manifest-driven shard of the storage suite (mirrors test-embedded-cmd
+        # / embedded-test-shard.sh). Conformance runs separately in the
+        # dedicated test-embedded-conformance job; embedded-storage-test-shard.sh
+        # excludes TestConformance from discovery, so it never lands in one of
+        # these shards.
+        run: bash .github/scripts/embedded-storage-test-shard.sh ${{ matrix.shard }} 5
+
+  test-embedded-conformance:
+    name: Fork Heavy Test (Embedded Dolt Conformance - ${{ matrix.partition }})
+    needs: [build-embedded]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [core, audit]
+    env:
+      BEADS_TEST_EMBEDDED_DOLT: "1"
+      BEADS_TEST_EMBEDDED_TEST_BINARY: /tmp/embeddeddolt-test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: embedded-test-binaries
+          path: /tmp/
+
+      - name: Fix permissions
+        run: chmod +x /tmp/embeddeddolt-test
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@beads.test"
+
+      - name: Test core conformance
+        if: matrix.partition == 'core'
+        # RunAll has a natural Audit seam. Run everything except Audit in the
+        # core shard and Audit alone in the other shard. The combined suite has
+        # exceeded 30m under runner variance; each half currently takes ~15m.
+        # Keep the Go timeout below the job timeout so a real stall still emits
+        # a diagnostic goroutine dump before Actions stops the job.
+        run: /tmp/embeddeddolt-test -test.v -test.count=1 -test.timeout=30m -test.run '^TestConformance$' -test.skip '^TestConformance$/^Audit$'
+
+      - name: Test audit conformance
+        if: matrix.partition == 'audit'
+        run: /tmp/embeddeddolt-test -test.v -test.count=1 -test.timeout=30m -test.run '^TestConformance$/^Audit$'
+
+  test-embedded-cmd:
+    name: Fork Heavy Test (Embedded Dolt Cmd ${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: [build-embedded]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: embedded-test-binaries
+          path: /tmp/
+
+      - name: Fix permissions
+        run: chmod +x /tmp/bd-embedded-test /tmp/embeddeddolt-test /tmp/bd-cmd-test
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@beads.test"
+
+      - name: Test
+        env:
+          BEADS_TEST_EMBEDDED_DOLT: "1"
+          BEADS_TEST_BD_BINARY: /tmp/bd-embedded-test
+        run: bash .github/scripts/embedded-test-shard.sh ${{ matrix.shard }} 20
+
+  test-proxied-cmd:
+    name: Fork Heavy Test (Proxied Dolt Cmd ${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: [build-embedded]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: embedded-test-binaries
+          path: /tmp/
+
+      - name: Fix permissions
+        run: chmod +x /tmp/bd-proxied /tmp/bd-cmd-test
+
+      - name: Install Dolt CLI
+        # TestProxiedServerExternalCreate needs the dolt binary on PATH; the
+        # shared harness itself uses the dolt sql-server container image.
+        run: ./scripts/ci/install-dolt.sh
+
+      - name: Configure Git and Dolt identity
+        run: |
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@beads.test"
+          dolt config --global --add user.name "CI Bot"
+          dolt config --global --add user.email "ci@beads.test"
+
+      - name: Pull Dolt sql-server image
+        # The shared proxied harness requires the image cached locally
+        # (isDoltImageCached); without it every proxied test self-skips. Keep the
+        # tag in sync with internal/testutil/testdoltcommon.go:DoltDockerImage.
+        run: ./scripts/ci/pull-dolt-image.sh
+
+      - name: Test proxied-server cmd shard
+        timeout-minutes: 26
+        env:
+          BEADS_TEST_PROXIED_SERVER: "1"
+          BEADS_TEST_BD_BINARY: /tmp/bd-proxied
+          BEADS_TEST_CMD_BINARY: /tmp/bd-cmd-test
+        run: bash .github/scripts/proxied-test-shard.sh ${{ matrix.shard }} 15
+
+  test-server-storage:
+    name: Fork Heavy Test (Server Dolt Conformance)
+    needs: [build-embedded]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: embedded-test-binaries
+          path: /tmp/
+
+      - name: Fix permissions
+        run: chmod +x /tmp/dolt-conformance-test
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@beads.test"
+
+      - name: Install Dolt
+        run: ./scripts/ci/install-dolt.sh
+
+      - name: Configure Dolt
+        run: |
+          dolt config --global --add user.name "CI Bot"
+          dolt config --global --add user.email "ci@beads.test"
+          dolt version
+
+      - name: Pull Dolt sql-server image
+        # Presence of this image flips isDoltImageCached() true, so the suite
+        # exercises server Dolt instead of self-skipping. Keep the tag in sync
+        # with internal/testutil/testdoltcommon.go:DoltDockerImage.
+        run: ./scripts/ci/pull-dolt-image.sh
+
+      - name: Test
+        # Server twin of test-embedded-conformance: same conformance.RunAll, but
+        # against the container-backed server-mode Dolt backend. No -short / no
+        # BEADS_TEST_SKIP=dolt, so TestMain starts the shared server and the
+        # suite runs instead of self-skipping.
+        run: /tmp/dolt-conformance-test -test.v -test.count=1 -test.timeout=15m -test.run '^TestConformance$'
+
+  test-server-storage-full:
+    name: Fork Heavy Test (Server Dolt Full Suite ${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: [build-embedded]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: embedded-test-binaries
+          path: /tmp/
+
+      - name: Fix permissions
+        run: chmod +x /tmp/dolt-conformance-test
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@beads.test"
+
+      - name: Install Dolt
+        run: ./scripts/ci/install-dolt.sh
+
+      - name: Configure Dolt
+        run: |
+          dolt config --global --add user.name "CI Bot"
+          dolt config --global --add user.email "ci@beads.test"
+          dolt version
+
+      - name: Pull Dolt sql-server image
+        # Presence of this image flips isDoltImageCached() true, so the suite
+        # exercises server Dolt instead of self-skipping. Keep the tag in sync
+        # with internal/testutil/testdoltcommon.go:DoltDockerImage.
+        run: ./scripts/ci/pull-dolt-image.sh
+
+      - name: Test
+        # build-embedded's dolt-conformance-test binary compiles every
+        # top-level test in internal/storage/dolt, not just conformance --
+        # test-server-storage above only ever runs the ^TestConformance$
+        # subset. Everything else in that binary (TestCreateGuard_*,
+        # federation/create-guard/concurrent suites, and diff-owned tests such
+        # as TestBenchDBPurgeDoesNotLeak on PR #5792) was reached by no
+        # PR-triggered lane and silently SKIPped for lack of a live server.
+        # This sibling job reuses the same artifact and server setup and runs
+        # everything else instead, so a SKIP there gets a real PASS/FAIL.
+        #
+        # Manifest-driven shard of the full suite (mirrors test-embedded-storage
+        # / server-storage-test-shard.sh): 1126 tests in one 15m-Go-timeout job
+        # never finished (job 95616282508 died at 256/1126 tests, 15m28s in,
+        # zero failures -- it just ran out of time). server-storage-test-shard.sh
+        # excludes TestConformance from discovery, so it never lands in one of
+        # these shards.
+        env:
+          BEADS_TEST_ENV_RUN_DOLT: "1"
+        run: bash .github/scripts/server-storage-test-shard.sh ${{ matrix.shard }} 16
+
+  managed-local-smoke:
+    name: Fork Heavy Managed-local proxied lifecycle (Linux, offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CGO_ENABLED: "1"
+      # Pinned so the lane tests a known dolt CLI, not whatever the installer
+      # resolves on a given day. Bump deliberately, and only in lockstep with
+      # the measured pin in scripts/ci/install-dolt.sh (see "Which Dolt
+      # version to install" in docs/architecture/dolt.md).
+      DOLT_VERSION: 2.2.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Go
+        id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: ${{ runner.environment == 'github-hosted' }}
+
+      - name: Install pinned Dolt CLI
+        run: |
+          curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-amd64.tar.gz" -o /tmp/dolt.tar.gz
+          tar -xzf /tmp/dolt.tar.gz -C /tmp
+          sudo install /tmp/dolt-linux-amd64/bin/dolt /usr/local/bin/dolt
+          dolt version
+
+      - name: Build bd and compile the test binary (online)
+        run: |
+          go build -tags gms_pure_go -o /tmp/bd-under-test ./cmd/bd
+          go test -tags gms_pure_go -c -o /tmp/proxied-local-smoke.test ./cmd/bd
+
+      - name: Assert the managed-local lifecycle tests are compiled in
+        run: |
+          listed="$(
+            BEADS_TEST_PROXIED_LOCAL=1 \
+            BEADS_TEST_SKIP=dolt \
+            /tmp/proxied-local-smoke.test \
+              -test.list '^TestManagedLocalProxied'
+          )"
+          for test_name in \
+            TestManagedLocalProxiedLifecycleSmoke \
+            TestManagedLocalProxiedForeignListenerNotAdopted \
+            TestManagedLocalProxiedReusedPidNeverKilled \
+            TestManagedLocalProxiedLegacyRecordFailClosed \
+            TestManagedLocalProxiedOrphanBackendReaped \
+            TestManagedLocalProxiedNProcessColdStartConvergence \
+            TestManagedLocalProxiedStopStartInterleave \
+            TestManagedLocalProxiedDoltStatusReportsLiveTopology \
+            TestManagedLocalProxiedDoltStartRefusesOverLiveProxy \
+            TestManagedLocalProxiedDoltStartRefusesWithProxyDown \
+            TestManagedLocalProxiedDoltLifecycleLeavesOtherTopologiesAlone \
+            TestManagedLocalProxiedTrackerUOWConformance \
+            TestManagedLocalProxiedBackupRoundTrip \
+            TestManagedLocalProxiedAutoBackup \
+            TestManagedLocalProxiedBackupRestoreRefusedWhileAttached \
+            TestManagedLocalProxiedPurgeWispsPlaneRetention \
+            TestManagedLocalProxiedBackendCleanExitRetiresProxy
+          do
+            if ! grep -qx "$test_name" <<<"$listed"; then
+              echo "managed-local lifecycle test $test_name is missing; got: '$listed'" >&2
+              exit 1
+            fi
+          done
+
+      - name: Run managed-local lifecycle lane offline (loopback-only netns)
+        run: |
+          sudo env \
+            "PATH=$PATH" \
+            BEADS_TEST_PROXIED_LOCAL=1 \
+            BEADS_TEST_SKIP=dolt \
+            BEADS_TEST_BD_BINARY=/tmp/bd-under-test \
+            unshare --net -- bash -euxc '
+              ip link set lo up
+              # Prove the namespace really has no outbound network before
+              # trusting anything the test reports.
+              if timeout 3 bash -c "exec 3<>/dev/tcp/1.1.1.1/443" 2>/dev/null; then
+                echo "outbound network unexpectedly available inside the netns" >&2
+                exit 1
+              fi
+              cd cmd/bd
+              /tmp/proxied-local-smoke.test \
+                -test.run "^TestManagedLocalProxied" \
+                -test.v -test.timeout 15m
+            '
+
+  # Fails unless every job above succeeded. None of them is conditional, so a
+  # skipped result means a need failed or the run was cut short, and that fails
+  # the gate too: ci-gate.sh counts skipped as a failure unless the variable is
+  # in CI_GATE_SKIPPED_OK, which nothing is here.
+  fork-heavy-gate:
+    name: Fork Heavy Tiers / Required
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - build-embedded
+      - test-embedded-storage
+      - test-embedded-conformance
+      - test-embedded-cmd
+      - test-proxied-cmd
+      - test-server-storage
+      - test-server-storage-full
+      - managed-local-smoke
+    if: ${{ always() }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Evaluate CI gate
+        env:
+          CI_GATE_NAME: Fork Heavy Tiers
+          CI_GATE_REQUIRED: >-
+            BUILD_EMBEDDED
+            TEST_EMBEDDED_STORAGE
+            TEST_EMBEDDED_CONFORMANCE
+            TEST_EMBEDDED_CMD
+            TEST_PROXIED_CMD
+            TEST_SERVER_STORAGE
+            TEST_SERVER_STORAGE_FULL
+            MANAGED_LOCAL_SMOKE
+          BUILD_EMBEDDED: ${{ needs.build-embedded.result }}
+          TEST_EMBEDDED_STORAGE: ${{ needs.test-embedded-storage.result }}
+          TEST_EMBEDDED_CONFORMANCE: ${{ needs.test-embedded-conformance.result }}
+          TEST_EMBEDDED_CMD: ${{ needs.test-embedded-cmd.result }}
+          TEST_PROXIED_CMD: ${{ needs.test-proxied-cmd.result }}
+          TEST_SERVER_STORAGE: ${{ needs.test-server-storage.result }}
+          TEST_SERVER_STORAGE_FULL: ${{ needs.test-server-storage-full.result }}
+          MANAGED_LOCAL_SMOKE: ${{ needs.managed-local-smoke.result }}
+        run: bash .github/scripts/ci-gate.sh
