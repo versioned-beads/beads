@@ -314,6 +314,10 @@ var seedFlows struct {
 func sharedSeededFlow(t *testing.T, v seedVariant) *seededFlow {
 	t.Helper()
 	replaytest.Require(t, replaytest.NeedDolt|replaytest.NeedBd)
+	// Decide what can be missing here, on the caller's own t, before an entry
+	// exists: a skip from inside the build would be stored as the flow's failure
+	// and fail every later test that asks. The next prerequisite goes here too.
+	replaytest.OldBd(t)
 	seedFlows.mu.Lock()
 	defer seedFlows.mu.Unlock()
 	if f, ok := seedFlows.built[v.name]; ok {
