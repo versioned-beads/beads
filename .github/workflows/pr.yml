@@ -1498,7 +1498,7 @@ jobs:
           # bazel-gate.sh's skip list allows; each lane's own result is
           # required above.
           BAZEL_REMOTE=success
-          if [[ ! "$BAZEL_RBE_MODE" =~ ^(remote|fork-ro|fork-rw)$ ]]; then
+          if [[ ! "$BAZEL_RBE_MODE" =~ ^(remote|fork-ro|fork-rw)$ && ! ( "${GITHUB_REPOSITORY_OWNER:-gastownhall}" != "gastownhall" && "$BAZEL_RBE_MODE" == "cache" ) ]]; then
             BAZEL_REMOTE=not-run-remotely
             echo "::error::The Bazel lanes did not run remotely on rbe-west (mode '${BAZEL_RBE_MODE:-none}'); they are this PR's only run of the Linux Go test tiers. In mode cache on a PR without the CI secrets, rbe-fork was closed or refused this run: re-run all jobs later."
           fi
