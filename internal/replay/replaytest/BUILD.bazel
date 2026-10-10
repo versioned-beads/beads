@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "replaytest",
-    srcs = ["replaytest.go"],
+    srcs = [
+        "oldbd.go",
+        "replaytest.go",
+    ],
     importpath = "github.com/steveyegge/beads/internal/replay/replaytest",
     visibility = ["//:__subpackages__"],
     deps = [

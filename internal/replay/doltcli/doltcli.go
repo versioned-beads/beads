@@ -29,7 +29,10 @@ type Cell struct {
 // deniedEnvVars are ambient environment variables that must never reach a
 // dolt or bd process the harness starts: letting one through risks silently
 // routing a replay at a shared or production store, or attaching the wrong
-// actor identity to a mutation the harness makes on its own behalf.
+// actor identity to a mutation the harness makes on its own behalf. The last
+// three are the product's own switches for its safety checks (the remote-backed
+// migration gate, the workspace identity check and the schema-skew check): a
+// harness that let one through would be testing a product with its guards off.
 var deniedEnvVars = map[string]bool{
 	"BEADS_DOLT_SERVER_PORT":      true,
 	"BEADS_DOLT_PORT":             true,
@@ -42,7 +45,35 @@ var deniedEnvVars = map[string]bool{
 	"BEADS_DOLT_AUTO_START":       true,
 	"BEADS_DOLT_SYNC_CLI_REMOTES": true,
 	"BEADS_BACKUP_ENABLED":        true,
+	"BD_ALLOW_REMOTE_MIGRATE":     true,
+	"BEADS_SKIP_IDENTITY_CHECK":   true,
+	"BD_IGNORE_SCHEMA_SKEW":       true,
 }
+
+// DeniedDoltVerbs are the dolt subcommands that send a store's state somewhere
+// else or take someone else's state in: each starts with the words listed. The
+// harness's Runner refuses every one of them. Taking a remote or a backup away
+// (`remote remove`, `backup remove`) is not on the list: that is how a seeded
+// copy is cut off from the places it was cloned from.
+var DeniedDoltVerbs = [][]string{
+	{"push"}, {"fetch"}, {"pull"},
+	{"remote", "add"},
+	{"backup", "add"}, {"backup", "sync"}, {"backup", "sync-url"}, {"backup", "restore"},
+}
+
+// DeniedBdVerbs are the bd subcommands that do the same through bd, which has its
+// own way to push a store, pull one and back one up. Every `bd backup` verb is
+// refused, whatever follows it.
+var DeniedBdVerbs = [][]string{
+	{"backup"},
+	{"dolt", "push"}, {"dolt", "pull"},
+}
+
+// DeniedSQLProcedures are the stored procedures that do from inside a statement
+// what the dolt verbs above do from the command line. A `dolt sql` command whose
+// statement calls one of them is refused like the verb it stands for. Reading the
+// tables that list remotes and backups is not a call and is allowed.
+var DeniedSQLProcedures = []string{"dolt_push", "dolt_pull", "dolt_fetch", "dolt_remote", "dolt_backup"}
 
 // SanitizedEnv returns base with every denied ambient variable removed, for
 // use as the environment of any dolt or bd process the harness starts.
@@ -90,8 +121,8 @@ func command(ctx context.Context, dir string, args ...string) (*exec.Cmd, error)
 // Never read rows with `-r json` instead: it leaves NULL columns out of the row
 // and rounds numbers inside JSON columns.
 func Query(ctx context.Context, dir, sql string) (header []string, rows [][]Cell, err error) {
-	if served := servedDataDir(dir); served != "" {
-		return nil, nil, fmt.Errorf("doltcli: %s is under %s, which a dolt sql-server is serving; querying it would route through that server instead of the local clone", dir, served)
+	if err := refuseServed(dir); err != nil {
+		return nil, nil, err
 	}
 	cmd, err := command(ctx, dir, "sql", "-q", sql, "-r", "csv")
 	if err != nil {
@@ -279,6 +310,16 @@ var sqlEscaper = strings.NewReplacer(`\`, `\\`, `'`, `''`)
 // here; this keeps a value they miss from ending the literal.
 func SQLQuote(s string) string {
 	return "'" + sqlEscaper.Replace(s) + "'"
+}
+
+// refuseServed is the error for a query aimed at a database a dolt sql-server is
+// serving, and nil for any other: a dolt command run there would route through the
+// server instead of reading the local clone.
+func refuseServed(dir string) error {
+	if served := servedDataDir(dir); served != "" {
+		return fmt.Errorf("doltcli: %s is under %s, which a dolt sql-server is serving; querying it would route through that server instead of the local clone", dir, served)
+	}
+	return nil
 }
 
 // servedDataDir returns dir or its nearest ancestor that a dolt sql-server is
