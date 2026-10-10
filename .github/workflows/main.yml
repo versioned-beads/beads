@@ -122,7 +122,7 @@ jobs:
     # here (the repository check closes the fork gap). Pinned by
     # TestBlacksmithSaverJobsGuardedAgainstPullRequest.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'gastownhall/beads'
-    runs-on: ${{ 'blacksmith-4vcpu-windows-2025' }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && 'blacksmith-4vcpu-windows-2025' || 'windows-latest' }}
     # F7b review fix (S8): paid Blacksmith Windows (4x billing). 20 matches
     # test-windows-liveness's timeout (S6) for consistency.
     timeout-minutes: 20

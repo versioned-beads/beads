@@ -60,7 +60,7 @@ jobs:
   # output.
   fast-checks:
     name: Fast checks (frozen migrations, .beads diff)
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 10
     outputs:
       migration-hygiene: ${{ steps.migration-hygiene.outcome }}
@@ -135,7 +135,7 @@ jobs:
   # required run of these tests.
   test-windows-liveness:
     name: Test (Windows) cmd/bd liveness regression
-    runs-on: ${{ 'blacksmith-4vcpu-windows-2025' }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && 'blacksmith-4vcpu-windows-2025' || 'windows-latest' }}
     # F7b review fix (S6): raised from 15 to 20, matching open PR #7143's own
     # measurement on this exact job (retained runs take about 8m; one run's
     # own step timing showed 451s total with a 403s compile step) and
@@ -252,7 +252,7 @@ jobs:
   # carries none of test-windows-liveness's cgo-toolchain risk.
   test-windows-small:
     name: Test (Windows) small packages (doltversion, dbproxy server)
-    runs-on: ${{ 'blacksmith-2vcpu-windows-2025' }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && 'blacksmith-2vcpu-windows-2025' || 'windows-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -308,7 +308,7 @@ jobs:
   # Blacksmith confirms/enables it.
   worktree-remove-windows:
     name: Worktree remove boundary (Windows)
-    runs-on: ${{ 'blacksmith-4vcpu-windows-2025' }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && 'blacksmith-4vcpu-windows-2025' || 'windows-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -370,7 +370,7 @@ jobs:
   # builds bd), so there is no GitHub-saved cache to lose here.
   check-doc-flags:
     name: Check doc flags freshness
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -428,7 +428,7 @@ jobs:
   # compile.
   check-doc-freshness-platforms:
     name: Check doc freshness (${{ matrix.os }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && matrix.runner || matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -510,7 +510,7 @@ jobs:
   # queued 63s for the larger runner and finished at 144s vs 129s here.
   pr-preflight-platforms:
     name: PR preflight process (${{ matrix.os }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && matrix.runner || matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -682,7 +682,7 @@ jobs:
   # and refactoring payoff.
   advisory-reports:
     name: Advisory reports (examples build, complexity)
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     # Review N-2 (2026-10-03): step timeouts sum to 42 min; 60 (not 45) keeps
     # job setup/post overhead from turning a stacked near-timeout stall into a
     # job-level cancel, which would red this advisory check through "another
@@ -822,7 +822,7 @@ jobs:
   # back on (revert this runs-on line to the literal `windows-latest`).
   windows-make-shell:
     name: Windows Make shell (native, msys2, cygwin)
-    runs-on: ${{ 'blacksmith-4vcpu-windows-2025' }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && 'blacksmith-4vcpu-windows-2025' || 'windows-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -1383,7 +1383,7 @@ jobs:
     # GitHub-saved cache. Must match the TestSameRepoBlacksmithRunners pin;
     # the gate's NAME must never change (ruleset requires exactly "CI Gate /
     # Required").
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'gastownhall' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     # F3: now on Blacksmith for same-repo PRs; a hang used to burn only the
     # default 360 minutes of a free GitHub-hosted runner, now Blacksmith
     # minutes too.

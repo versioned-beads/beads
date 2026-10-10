@@ -32,12 +32,12 @@ import (
 // pr.yml's and pr-risk.yml's ci-gate jobs - a package-level const so every
 // test that needs it (TestSameRepoBlacksmithRunners, ...) reads the one
 // literal.
-const sameRepoBlacksmith2vcpu = "${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
+const sameRepoBlacksmith2vcpu = "${{ github.repository_owner == 'gastownhall' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
 
 // F7a: the same same-repo expression at 4 vCPU and 8 vCPU, for jobs sized
 // larger than the 2 vCPU default (check-doc-flags,
 // pr-risk.yml's test-nix at 4 vCPU). F7c's advisory workflows also use the 4 vCPU size.
-const sameRepoBlacksmith4vcpu = "${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
+const sameRepoBlacksmith4vcpu = "${{ github.repository_owner == 'gastownhall' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
 const sameRepoBlacksmith8vcpu = "${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}"
 
 // Windows and macOS jobs run on Blacksmith for every event, forks and
@@ -53,8 +53,8 @@ const sameRepoBlacksmith8vcpu = "${{ (github.event_name == 'merge_group' || (git
 // for who may run code there (a fork's own workflow file controls runs-on
 // anyway). TestBlacksmithJobsReadNoSecrets keeps every such job free of
 // secret reads.
-const blacksmithWindows2vcpuRunsOn = "${{ 'blacksmith-2vcpu-windows-2025' }}"
-const blacksmithWindows4vcpuRunsOn = "${{ 'blacksmith-4vcpu-windows-2025' }}"
+const blacksmithWindows2vcpuRunsOn = "${{ github.repository_owner == 'gastownhall' && 'blacksmith-2vcpu-windows-2025' || 'windows-latest' }}"
+const blacksmithWindows4vcpuRunsOn = "${{ github.repository_owner == 'gastownhall' && 'blacksmith-4vcpu-windows-2025' || 'windows-latest' }}"
 
 // bazel.yml's lanes pick their runner from the rbe job's decision alone
 // (TestBazelRBEJobDecidesOnce): Blacksmith in mode remote, GitHub-hosted
@@ -120,7 +120,7 @@ const blacksmithWindowsLabel = "blacksmith-4vcpu-windows-2025"
 // platformsMatrixRunsOn: the mixed-OS matrix jobs (pr-preflight-platforms,
 // check-doc-freshness-platforms) name each leg's Blacksmith label in its
 // `include` entry's `runner` field.
-const platformsMatrixRunsOn = "${{ matrix.runner }}"
+const platformsMatrixRunsOn = "${{ github.repository_owner == 'gastownhall' && matrix.runner || matrix.os }}"
 
 // platformsMatrixRunners: each mixed-OS matrix leg's `os` (which keeps the
 // check names stable) -> its Blacksmith label.

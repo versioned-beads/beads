@@ -2758,7 +2758,7 @@ jobs:
     name: repo contents cache seed
     needs: rbe
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.rbe.outputs.mode == 'remote' && needs.rbe.outputs.rrc != 'off' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'gastownhall' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -2808,7 +2808,7 @@ jobs:
     name: repo contents cache verify
     needs: rbe
     if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.rbe.outputs.mode == 'remote' && needs.rbe.outputs.rrc != 'off' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ${{ github.repository_owner == 'gastownhall' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 45
     permissions:
       contents: read
