@@ -120,6 +120,9 @@ func init() {
 
 		"RunLifecycleUpdateExpectedVersionSingleWinnerWithDisjointColumnsUnderConcurrency":  issuePatchFieldsNotOnUpdateWireWaiverReason,
 		"RunLifecycleUpdateExpectedVersionSingleWinnerAcrossUpdateAndCloseUnderConcurrency": issuePatchFieldsNotOnUpdateWireWaiverReason,
+
+		"RunParticipationGenerationWispPersistenceMoveBeginsHistory": persistenceMoveNotOnWireWaiverReason,
+		"RunParticipationGenerationWispPromotionBeginsHistory":       wispPromotionNoWireOperationWaiverReason,
 	})
 }
 
@@ -328,6 +331,92 @@ const issuePatchFieldsNotOnUpdateWireWaiverReason = "PENDING, not permanent (tra
 	"internal/httpclient/encode/ledger.go, D8 refuse-not-drop) rather than ever reaching the server, so the race " +
 	"never happens over this wire; closing the gap means publishing those fields on IssuePatchBody, which is a " +
 	"wire change to the write role (S4b), not something this leg's test wiring can bind around today"
+
+// wispPromotionNoWireOperationWaiverReason covers the ParticipationGeneration
+// contract whose subject is a wisp's promotion: a wisp that arrives on the
+// issues plane by being promoted begins its version history there
+// (RunParticipationGenerationWispPromotionBeginsHistory).
+//
+// The contract's only way onto the issues plane is the fixture's PromoteWisp
+// hook, which is storage.PromoteFromEphemeral on the store legs, and this wire
+// publishes no operation for an http hook to dial instead:
+//
+//   - internal/httpclient/unsupported_gen.go leaves PromoteFromEphemeral on the
+//     generated refusing shell (unsupportedDoltStorage.PromoteFromEphemeral
+//     returns errUnsupported), and completeness_test.go's legitimatelyUnsupported
+//     allowlist records the reason as "write: no wisp-promotion operation".
+//     TestUnsupportedContract executes that method on a zero Store and pins the
+//     typed *storage.ErrUnsupported; TestInterfaceCompleteness holds the shell
+//     equal to the allowlist.
+//   - internal/httpapi/spec/openapi.v0.yaml names no operation or path for
+//     promotion, wisps, or persistence. Its one use of "promoting" is claimNext's
+//     note that a claim moves the ephemeral row itself rather than promoting it,
+//     and createIssue's `ephemeral` member only places a NEW row on the wisp
+//     plane — it moves nothing off it.
+//
+// Binding PromoteWisp to the reference store instead, as this leg's served
+// fixtures bind their out-of-band hooks, would let a direct store mutation stand
+// in for client coverage: it would assert a property of the store the server
+// happens to share a process with, never of the client under test. So
+// served_dualwrite_participation_generation_test.go runs the five fence cases
+// the wire can express and leaves CreateWisp, PromoteWisp, and MovePersistent
+// unbound.
+//
+// The waiver lasts exactly as long as the gap. When the wire publishes a
+// promotion operation and the client dials it, wire this entrypoint in that file
+// and delete this entry in the same change; the lock refuses an entrypoint that
+// is both wired and waived.
+const wispPromotionNoWireOperationWaiverReason = "the wire has no wisp-promotion operation, so this " +
+	"contract's only way onto the issues plane (PromoteWisp, storage.PromoteFromEphemeral) cannot run through " +
+	"the client: internal/httpclient/unsupported_gen.go leaves PromoteFromEphemeral on the refusing shell, " +
+	"completeness_test.go's legitimatelyUnsupported lists it as \"write: no wisp-promotion operation\" " +
+	"(TestUnsupportedContract pins the typed refusal), and internal/httpapi/spec/openapi.v0.yaml publishes no " +
+	"operation that promotes a wisp; binding PromoteWisp to the reference store instead would assert a property " +
+	"of the store the server shares a process with, never of the client under test"
+
+// persistenceMoveNotOnWireWaiverReason covers the ParticipationGeneration
+// contract whose subject is a wisp moved onto the issues plane by a
+// persistence-mode update: that wisp begins its version history there
+// (RunParticipationGenerationWispPersistenceMoveBeginsHistory).
+//
+// The contract's only way onto the issues plane is the fixture's MovePersistent
+// hook, which on the store legs is the guarded update `bd update --persistent`
+// runs: an IssuePatch whose Persistence member is set. No update body on this
+// wire carries that member, and the client does not drop it silently — it
+// refuses before anything is dialed:
+//
+//   - internal/httpapi/spec/openapi.v0.yaml leaves `persistence` out of both
+//     updateIssue's IssuePatchBody and issues:batchApply's ApplyPatchBody on
+//     purpose ("a plane move is an atomic aggregate migration rather than a
+//     field write"); its only mentions of the word are the two sentences saying
+//     so, and no request schema has a property by that name.
+//   - internal/httpclient/lifecycle.go's refuseExcludedPatchMembers returns the
+//     W-IssuePatch.Persistence refusal (encode/ledger.go's patchRow
+//     "Persistence"), and batchapplier.go's applyPatchExcludedMembers carries
+//     the same row for the batch path. TestUpdateRefusesEveryMemberTheWireExcludes
+//     ("Patch.Persistence") and TestApplyBatchRefusesEveryMemberTheWireExcludes
+//     ("Persistence") execute the two refusals, and
+//     TestServedLifecycleUpdatePersistentPreservesUnversionedClass is already
+//     parked on the same gap.
+//
+// A request that cannot leave the client cannot show the server beginning
+// anything, and binding MovePersistent to the reference store instead would let
+// a direct store mutation stand in for client coverage — the same objection as
+// wispPromotionNoWireOperationWaiverReason's. Closing the gap is a wire change
+// (publishing `persistence` on an update body), not a test binding.
+//
+// The waiver lasts exactly as long as the gap. When the wire carries the member
+// and the client sends it, wire this entrypoint in
+// served_dualwrite_participation_generation_test.go and delete this entry in the
+// same change.
+const persistenceMoveNotOnWireWaiverReason = "no update body on the wire carries `persistence`: updateIssue's " +
+	"IssuePatchBody and issues:batchApply's ApplyPatchBody both omit it (\"a plane move is an atomic aggregate " +
+	"migration rather than a field write\"), so the client refuses a persistence-mode patch before dialing " +
+	"(refuseExcludedPatchMembers and applyPatchExcludedMembers, W-IssuePatch.Persistence in " +
+	"internal/httpclient/encode/ledger.go; TestUpdateRefusesEveryMemberTheWireExcludes and " +
+	"TestApplyBatchRefusesEveryMemberTheWireExcludes execute the two refusals) and this contract's only way onto " +
+	"the issues plane, MovePersistent, never reaches the server; binding it to the reference store instead would " +
+	"assert a property of the store the server shares a process with, never of the client under test"
 
 // TestEveryLegWiresEveryRoleContract fails when a backend leg skips a role
 // contract the conformance package exports.
