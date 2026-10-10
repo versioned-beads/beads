@@ -48,6 +48,7 @@ go_library(
         "iter_stubs.go",
         "journal_accessor.go",
         "labels.go",
+        "lease_reclaimer.go",
         "memories.go",
         "merge_slot.go",
         "metadata_cas.go",
@@ -126,7 +127,7 @@ go_library(
 # this package with a real `go test -c` (integration.SubprocessRunner), which
 # needs the module's source tree and a module cache no action has. They run
 # only against a server: skipped under --config=integration
-# (BEADS_TEST_SKIP=dolt, like nightly.yml's full test), and run by
+# (BEADS_TEST_SKIP=dolt), and run by
 # dolt_server_full_test, which hands SubprocessRunner its own test binary
 # (BEADS_TEST_SUBPROCESS_BINARY) instead.
 go_test(
@@ -146,6 +147,7 @@ go_test(
         "blocked_recheck_publication_test.go",
         "blocked_recheck_raw_test.go",
         "blocked_recompute_guard_test.go",
+        "blocked_scale_bench_test.go",
         "blocking_annotator_contract_test.go",
         "bootstrap_test.go",
         "bootstrapper_contract_test.go",
@@ -269,6 +271,7 @@ go_test(
         "large_batch_apply_measure_test.go",
         "large_graph_create_bench_test.go",
         "lease_migration_test.go",
+        "lease_reclaimer_contract_test.go",
         "lease_test.go",
         "lenient_open_dirty_tables_integration_test.go",
         "lifecycle_close_reopen_contract_test.go",
@@ -350,6 +353,7 @@ go_test(
         "testmain_helper_sentinel_test.go",
         "testmain_test.go",
         "transaction_borrow_test.go",
+        "transaction_ignored_checkout_test.go",
         "transaction_phase_test.go",
         "transaction_test.go",
         "transaction_wisp_lifecycle_persistence_test.go",
@@ -594,3 +598,64 @@ filegroup(
 )
 
 # --- end go_srcs ---
+
+# --- begin repo_files (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
+
+filegroup(
+    name = "repo_doc_files",
+    srcs = glob(
+        [
+            "**/*.md",
+            "**/*.mdx",
+        ],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+filegroup(
+    name = "repo_go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        allow_empty = True,
+        exclude = [
+            "**/*_test.go",
+            "**/node_modules/**",
+        ],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+filegroup(
+    name = "repo_go_test_srcs",
+    srcs = glob(
+        ["**/*_test.go"],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+filegroup(
+    name = "repo_other_files",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "**/*.db",
+            "**/*.exe",
+            "**/*.go",
+            "**/*.md",
+            "**/*.mdx",
+            "**/*.out",
+            "**/*.prof",
+            "**/*.pyc",
+            "**/*.test",
+            "**/__pycache__/**",
+            "**/node_modules/**",
+        ],
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+# --- end repo_files ---
