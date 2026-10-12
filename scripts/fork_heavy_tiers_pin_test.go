@@ -1,6 +1,8 @@
 package scripts_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,8 +24,8 @@ import (
 // W1, be-fxkoxb; ruling be-4y7b5s sections 3.4, 5.1 rule 4, 8.3 and 11, as
 // amended by be-bg8llq).
 //
-// The workflow is lifted, not written: its eight jobs come out of the git blobs
-// of pr-risk.yml and proxied-local-smoke.yml at forkHeavyBase with five edits
+// The workflow is lifted, not written: its eight jobs come out of pr-risk.yml
+// and proxied-local-smoke.yml as they stand at forkHeavyBase with five edits
 // and nothing else (a "Fork Heavy " name prefix, needs cut down to
 // build-embedded, the tier if: dropped, a Blacksmith runs-on made
 // ubuntu-latest, and, for managed-local-smoke alone, its Blacksmith-only cache
@@ -43,6 +45,13 @@ import (
 //     TestForkHeavyTiersLiftMatchesSourceBlobs.
 //   - 3, R8 and R9 over both workflow files: fork_proxied_lane_pin_test.go.
 //
+// Those two source files are carried in the tree, not read from git history:
+// scripts/testdata/fork-heavy-tiers holds each one byte for byte as `git show
+// forkHeavyBase:.github/workflows/<name>` prints it, and forkHeavySourceSHA256
+// pins its digest. So the lift comparison runs, and can fail, in a shallow
+// clone, in a source archive with no .git and in scripts_test's runfiles alike,
+// and no pin here skips for want of history (be-sj4myt, the rework of W1).
+//
 // Criteria 4 and 5 are runs, not pins, and nothing in this file stands in for
 // them: the three-row table of ruling be-bg8llq section 3.5 (upstream's scripts
 // package, whose workflow sweeps are bazel_policy_test.go, ci_f7c_advisory_test.go,
@@ -55,7 +64,7 @@ import (
 // Every pin here asserts a pre-sync shape, so each is gone or re-pointed in the
 // sync pull request (ruling section 11). When rbe-fork opens to vb and the
 // workflow is retired, delete the workflow, this file, its line in
-// scripts/BUILD.bazel, its entry in tools/bazel/equivalence_allowlist.txt and
+// scripts/BUILD.bazel, the fixtures under scripts/testdata/fork-heavy-tiers and
 // the "fork-heavy-tiers.yml": 3 entry, with its comment, that W4 adds to
 // scripts/pull_dolt_image_test.go after the sync (be-bg8llq sections 3.1 and
 // 4.4), together. A retirement that leaves that entry behind fails nothing,
@@ -67,8 +76,10 @@ const (
 	forkHeavyNamePrefix      = "Fork Heavy "
 	forkHeavyCheckout        = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 
-	// vb/integration when W1 was cut. The lift's source blobs are read here, and
-	// the table below is a table of facts about them.
+	// vb/integration when W1 was cut: the commit whose pr-risk.yml and
+	// proxied-local-smoke.yml the workflow was lifted from. The table below is a
+	// table of facts about those two files, which this package carries as
+	// fixtures named after the commit (forkHeavySourceJobs) and never asks git for.
 	forkHeavyBase = "356275a13290064fe903ace31984c14d1b9f7ad4"
 
 	// Section 3.4: 58 matrix legs and three single jobs.
@@ -631,11 +642,11 @@ func TestForkHeavyTiersNamesOnlyHelpersThatExist(t *testing.T) {
 	}
 }
 
-// Criterion 2, the lifted shape without git: each job keeps the ids, names,
-// needs, timeouts, matrices and steps of its source, less managed-local-smoke's
-// two cache steps (edit 5, be-bg8llq), so a retype or a trim shows even where
-// history is not at hand (TestForkHeavyTiersLiftMatchesSourceBlobs then compares
-// every byte of the values).
+// Criterion 2, the lifted shape from the table in this file: each job keeps the
+// ids, names, needs, timeouts, matrices and steps of its source, less
+// managed-local-smoke's two cache steps (edit 5, be-bg8llq), so a retype or a
+// trim shows against facts written down here (TestForkHeavyTiersLiftMatchesSourceBlobs
+// then compares every byte of the values with the source fixtures).
 func TestForkHeavyTiersJobsKeepTheirShape(t *testing.T) {
 	jobs := forkHeavyRawJobs(t)
 	legs := 0
@@ -698,6 +709,53 @@ func TestForkHeavyTiersJobsKeepTheirShape(t *testing.T) {
 	}
 }
 
+// The lift's source, carried in the tree. Each file is what `git show
+// forkHeavyBase:.github/workflows/<name>` prints, byte for byte, under
+// forkHeavySourceDir (a directory scripts_test's runfiles hold), named after
+// forkHeavyBase so that moving the base moves the path. The names do not end in
+// .yml on purpose: they are not workflows, and nothing that sweeps YAML files or
+// .github/workflows picks them up. The digests are the integrity check, because
+// the comparison is only as good as its oracle: a fixture that is trimmed,
+// reworded or swapped for the lifted workflow itself would otherwise make the
+// lift compare equal to a source that is not the source. The git blob ids
+// (pr-risk.yml 780c31af062283b15b368908f679687cc578c0ba, 33670 bytes;
+// proxied-local-smoke.yml c3a30691e236899bdc4c56f6a130e57d1ef04c8c, 8282 bytes)
+// are for a reader with history; the test needs only the SHA-256.
+const forkHeavySourceDir = "scripts/testdata/fork-heavy-tiers"
+
+var forkHeavySourceSHA256 = map[string]string{
+	"pr-risk.yml":             "9a57dcfe6dc61f81a98f21b1aadc9f4748f4dd49189ec1e5538b06bb363976ce",
+	"proxied-local-smoke.yml": "df1edf589a77cdd75e9450f0899558cbadee5fc48040a8e65abe3fd6a016d574",
+}
+
+// forkHeavySourceJobs returns the jobs of one lift-source workflow as plain YAML
+// data, once the fixture is proved to be that file. A fixture that is missing or
+// differs fails the test: it never skips it, and it is never re-pinned silently.
+func forkHeavySourceJobs(t *testing.T, file string) map[string]any {
+	t.Helper()
+	want, ok := forkHeavySourceSHA256[file]
+	if !ok {
+		t.Fatalf("no SHA-256 is pinned for the lift source %s: forkHeavySourceSHA256 has one entry per workflow file that forkHeavyJobs names as a source", file)
+	}
+	rel := forkHeavySourceDir + "/" + file + "." + forkHeavyBase[:12]
+	regenerate := fmt.Sprintf("git show %s:.github/workflows/%s > %s", forkHeavyBase, file, rel)
+	data, err := os.ReadFile(filepath.Join(sourceRepoRoot(t), filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("the lift's source fixture %s cannot be read, so the lift cannot be compared with its source (git history is not consulted): %v\nrestore it from a clone that has %s: %s", rel, err, forkHeavyBase[:12], regenerate)
+	}
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("%s has SHA-256 %s (%d bytes), want %s: it is not %s:.github/workflows/%s byte for byte.\nregenerate it with: %s\nnever hand-edit it, and never re-pin a digest to match a changed fixture; moving forkHeavyBase means re-vendoring both fixtures and re-pinning both digests in one commit", rel, got, len(data), want, forkHeavyBase[:12], file, regenerate)
+	}
+	var doc struct {
+		Jobs map[string]any `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parse %s: %v", rel, err)
+	}
+	return doc.Jobs
+}
+
 // forkHeavyLift applies the five ruled edits to a source job: the name gains the
 // prefix, needs go (the caller compares them as a set), the tier if: goes, a
 // Blacksmith runs-on becomes ubuntu-latest, and the steps of forkHeavyDroppedSteps
@@ -724,20 +782,16 @@ func forkHeavyLift(t *testing.T, id string, source map[string]any) map[string]an
 	return job
 }
 
-// Criterion 2, the lift diff. Every lifted job equals its source blob at
-// forkHeavyBase after the five ruled edits (section 3.4 as amended by be-bg8llq
-// section 2), and nothing else: not a retyped command, a loosened timeout or a
-// reworded step. Edit 5 fires for managed-local-smoke alone and takes exactly
-// the two steps of forkHeavyDroppedSteps, which the last check below counts.
+// Criterion 2, the lift diff. Every lifted job equals its job in the source
+// workflow at forkHeavyBase after the five ruled edits (section 3.4 as amended by
+// be-bg8llq section 2), and nothing else: not a retyped command, a loosened
+// timeout or a reworded step. Edit 5 fires for managed-local-smoke alone and takes
+// exactly the two steps of forkHeavyDroppedSteps, which the last check below
+// counts. The source is the digest-pinned fixtures (forkHeavySourceJobs), so this
+// pin needs no git history and has no skip: it runs in a shallow clone, in a
+// source archive with no .git and under Bazel, and an altered or missing fixture
+// fails it.
 func TestForkHeavyTiersLiftMatchesSourceBlobs(t *testing.T) {
-	if os.Getenv("TEST_SRCDIR") != "" {
-		t.Skip("the source blobs come from git history, which scripts_test's runfiles do not hold; runs under go test")
-	}
-	git := requireHostTool(t, "git")
-	root := sourceRepoRoot(t)
-	if err := exec.Command(git, "-C", root, "cat-file", "-e", forkHeavyBase+"^{commit}").Run(); err != nil {
-		t.Skipf("commit %s is not in this clone (a shallow checkout?), so the lift cannot be compared with its source blobs; TestForkHeavyTiersJobsKeepTheirShape still pins its shape", forkHeavyBase)
-	}
 	got := forkHeavyRawJobs(t)
 
 	sources := map[string]map[string]any{}
@@ -745,18 +799,8 @@ func TestForkHeavyTiersLiftMatchesSourceBlobs(t *testing.T) {
 		if jobs, ok := sources[file]; ok {
 			return jobs
 		}
-		blob, err := exec.Command(git, "-C", root, "show", forkHeavyBase+":.github/workflows/"+file).Output()
-		if err != nil {
-			t.Fatalf("git show %s:.github/workflows/%s: %v", forkHeavyBase, file, err)
-		}
-		var doc struct {
-			Jobs map[string]any `yaml:"jobs"`
-		}
-		if err := yaml.Unmarshal(blob, &doc); err != nil {
-			t.Fatalf("parse %s at %s: %v", file, forkHeavyBase, err)
-		}
-		sources[file] = doc.Jobs
-		return doc.Jobs
+		sources[file] = forkHeavySourceJobs(t, file)
+		return sources[file]
 	}
 
 	dropped := map[string]int{} // job id -> source steps edit 5 takes out of it
