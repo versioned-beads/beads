@@ -6,6 +6,7 @@ go_library(
         "doltcli.go",
         "procalive_unix.go",
         "procalive_windows.go",
+        "runner.go",
     ],
     importpath = "github.com/steveyegge/beads/internal/replay/doltcli",
     visibility = ["//:__subpackages__"],
@@ -21,6 +22,7 @@ go_test(
     name = "doltcli_test",
     srcs = [
         "b2_test.go",
+        "b8_test.go",
         "doltcli_test.go",
         "pcsv_test.go",
     ],

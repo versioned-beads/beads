@@ -230,6 +230,7 @@ func Main(m *testing.M) int {
 	if bdBuild.dir != "" {
 		_ = os.RemoveAll(bdBuild.dir)
 	}
+	removeOldBd()
 	return code
 }
 

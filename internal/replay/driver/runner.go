@@ -24,6 +24,13 @@ type runner struct {
 	derived        map[string]int
 	skew           compare.Skew
 	numberFidelity int
+
+	// baseline and enableRefused are what a seeded run found before its first step:
+	// how the work clone compared with the oracle at the base, and whether the
+	// product refused to turn versioned history on. Both stay nil on a run that did
+	// not find them.
+	baseline      *BaselineFinding
+	enableRefused *EnableRefusal
 }
 
 func newRunner(runID string, store *Store, observer Observer) *runner {
@@ -181,6 +188,13 @@ type Summary struct {
 	// Seed describes the seeding that gave the work clone the oracle's base state;
 	// absent when there was none.
 	Seed *SeedRecord `json:"seed,omitempty"`
+	// Baseline counts how many of the seeded issues the work clone holds exactly as
+	// the oracle did at the base, before anything was replayed; absent when the run
+	// was not seeded.
+	Baseline *BaselineFinding `json:"baseline,omitempty"`
+	// EnableRefused is set when the product would not turn versioned history on over
+	// the seeded rows, and the run went on without it; absent otherwise.
+	EnableRefused *EnableRefusal `json:"enable_refused,omitempty"`
 }
 
 // CoveredRange is the part of the oracle's history a run replayed. History
@@ -233,6 +247,8 @@ func (r *runner) summarize(run ReplayRun, w *Walk, steps []Step, seed *SeedRecor
 		SchemaSkew:     copySkew(r.skew),
 		NumberFidelity: r.numberFidelity,
 		Seed:           seed,
+		Baseline:       r.baseline,
+		EnableRefused:  r.enableRefused,
 	}
 }
 
