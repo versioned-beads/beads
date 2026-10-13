@@ -123,6 +123,12 @@ func init() {
 
 		"RunParticipationGenerationWispPersistenceMoveBeginsHistory": persistenceMoveNotOnWireWaiverReason,
 		"RunParticipationGenerationWispPromotionBeginsHistory":       wispPromotionNoWireOperationWaiverReason,
+
+		"RunAsOfReadIsCompleteOnlyForTheAnsweringStoresHoldings":              asOfReadNoWireOperationWaiverReason,
+		"RunAsOfReadRefusesAsGoneOrUnknownNeverSubstitutingAnotherVersion":    asOfReadNoWireOperationWaiverReason,
+		"RunAsOfReadReportsTheAddressItServed":                                asOfReadNoWireOperationWaiverReason,
+		"RunAsOfReadReturnsTheLatestVersionAtOrBeforeTStrictlyExcludingLater": asOfReadNoWireOperationWaiverReason,
+		"RunAsOfReadSelectorAcceptsEitherAnInstantOrAVersionAddress":          asOfReadNoWireOperationWaiverReason,
 	})
 }
 
@@ -417,6 +423,59 @@ const persistenceMoveNotOnWireWaiverReason = "no update body on the wire carries
 	"TestApplyBatchRefusesEveryMemberTheWireExcludes execute the two refusals) and this contract's only way onto " +
 	"the issues plane, MovePersistent, never reaches the server; binding it to the reference store instead would " +
 	"assert a property of the store the server shares a process with, never of the client under test"
+
+// asOfReadNoWireOperationWaiverReason covers the five AsOfReadFixture cases:
+// R7.1's as-of read (backend/conformance/versioned_read_contract.go).
+//
+// NOT SCHEDULED, and not an exclusion by design either: the capability does
+// not exist on this wire, and this waiver does not schedule it.
+//
+// The fixture's subject is Resolve (conformance.AsOfRead), a RAW STORAGE HOOK:
+// AsOfReadFixture carries IssuePrefix and three hooks (Resolve, MintAt,
+// MakeUnanswerable) and no publicops role. Resolve's only implementation is
+// issueops.AsOfReadInTx (internal/storage/issueops/asof_read.go), and at this
+// tree only tests call it: the dolt, embeddeddolt and uow legs'
+// versioned_read_contract_test.go harnesses, each inside its own transaction,
+// and issueops' own unit tests. No store method, role, command or wire
+// operation sits in front of it (the dolt and embeddeddolt harnesses call it
+// inside the store's own read transaction, the uow harness inside RunTxRead
+// with a unit-of-work runner), so there is nothing for an http Resolve to
+// dial:
+//
+//   - internal/httpapi/spec/openapi.v0.yaml publishes no operation that reads
+//     an issue as of an instant or a version address, or lists versions.
+//   - internal/httpclient leaves the neighbouring AsOf and History methods on
+//     the generated refusing shell (unsupported_gen.go), and
+//     completeness_test.go's legitimatelyUnsupported records why: no v0
+//     operation can answer them, and v0 publishes no history surface.
+//
+// Binding Resolve to the reference store instead would put the SUBJECT of the
+// contract on the store side of the wire: it would assert a property of the
+// store the server happens to share a process with, never of the client under
+// test (the objection issueOperationsUpdateRawSeamWaiverReason makes for the
+// untyped funnel). MintAt and MakeUnanswerable are seeding hooks and could
+// stay reference-side, as this leg's other served fixtures keep theirs; that
+// does not change who the subject is. Leaving Resolve nil would run nothing
+// while still counting as wired.
+//
+// Closing this gap is a new role plus a new wire operation (with a client
+// accessor, golden and capability), not a test binding, so it is a decision of
+// its own. The waiver retires entry by entry, in the same change that wires
+// THAT entry; one new operation does not retire all five.
+// RunAsOfReadRefusesAsGoneOrUnknownNeverSubstitutingAnotherVersion also needs a
+// MakeUnanswerable binding, and
+// RunAsOfReadIsCompleteOnlyForTheAnsweringStoresHoldings needs a second store.
+// The lock refuses an entrypoint that is both wired and waived.
+const asOfReadNoWireOperationWaiverReason = "NOT SCHEDULED: R7.1's as-of read has no wire operation to dial. " +
+	"The five AsOfReadFixture cases take Resolve (conformance.AsOfRead) as their subject, a raw storage hook " +
+	"with no publicops role, whose only implementation (issueops.AsOfReadInTx) is called today only from tests " +
+	"(the dolt, embeddeddolt and uow legs' own harnesses and issueops' own unit tests); " +
+	"internal/httpapi/spec/openapi.v0.yaml publishes no operation that reads an issue as of an instant or a " +
+	"version address, or lists versions, and the client leaves AsOf and History on the refusing shell " +
+	"(completeness_test.go's legitimatelyUnsupported: v0 publishes no history surface). Binding Resolve to the " +
+	"reference store instead would assert a property of the store the server shares a process with, never of " +
+	"the client under test, and a nil Resolve would count as wired while running nothing. Closing this gap " +
+	"means a new role and wire operation, which is its own decision, not a test binding"
 
 // TestEveryLegWiresEveryRoleContract fails when a backend leg skips a role
 // contract the conformance package exports.
