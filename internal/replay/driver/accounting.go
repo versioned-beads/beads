@@ -181,7 +181,7 @@ func (s *stepAccount) states(ctx context.Context, h *hostAccount, delta versions
 		}
 		axis, mismatch, err := versionAxis(got[readerRow].View, got[readerVersioned])
 		if err != nil {
-			return fmt.Errorf("hold the version %s stored for %s to the issue as %s left it: %w", res.Kind, i.ID, res.Kind, err)
+			return fmt.Errorf("hold the version stored for %s by %s to the issue as it was left: %w", i.ID, res.Kind, err)
 		}
 		if axis != AxisMismatch || mismatch == nil {
 			continue
