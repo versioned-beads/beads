@@ -307,12 +307,14 @@ func TestB11bNoOpMintsNothing(t *testing.T) {
 	}
 
 	t.Run("close-then-close-again", func(t *testing.T) {
-		first := b11bRun(s, b11bLedgerActor, "close", "--reason", "done", "--", a)
+		// The setup gave the issue an edge to the other, so it is blocked, and bd will
+		// not close a blocked issue unless it is made to.
+		first := b11bRun(s, b11bLedgerActor, "close", "--force", "--reason", "done", "--", a)
 		changed := b11bIssueIn(t, b11bDeltaOf(t, s, first), a)
 		if !changed.Real || len(changed.Rows) != 1 {
 			t.Fatalf("the first close should be one real change with one row: real %v, rows %+v", changed.Real, changed.Rows)
 		}
-		again := b11bRun(s, b11bLedgerActor, "close", "--reason", "done", "--", a)
+		again := b11bRun(s, b11bLedgerActor, "close", "--force", "--reason", "done", "--", a)
 		if again.Before != again.After {
 			t.Errorf("premise: bd committed for a second close")
 		}
