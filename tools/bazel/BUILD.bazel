@@ -245,6 +245,7 @@ release_cross_build(
         "//internal/replay/oracle:oracle",
         "//internal/replay/replaytest:replaytest",
         "//internal/replay/translate:translate",
+        "//internal/replay/versions:versions",
         "//internal/routing:routing",
         "//internal/storage/backendnames:backendnames",
         "//internal/storage/backends:backends",
