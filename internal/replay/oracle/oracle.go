@@ -126,6 +126,34 @@ func Columns(ctx context.Context, dir, ref, table string) ([]string, error) {
 	return header, nil
 }
 
+// Select returns the columns of the rows of table at ref that tail picks, as the
+// header dolt printed and the typed cells of each row, for a caller that needs a
+// read of its own. A ref that predates the table gives a nil header and no rows
+// and is not an error; a table that is there but has no row to pick still gives
+// its header, which is how the two are told apart. See the package comment for
+// how failures are told apart.
+//
+// columns is the select list and tail what follows the table: a WHERE, an ORDER
+// BY, a LIMIT, or nothing. Both are spliced into the `dolt sql -q` argument, which
+// has no bind-parameter API, so the caller writes them from fixed text and values
+// quoted with doltcli.SQLQuote only. ref and table are validated here.
+func Select(ctx context.Context, dir, ref, table, columns, tail string) ([]string, [][]doltcli.Cell, error) {
+	if err := issueops.ValidateRef(ref); err != nil {
+		return nil, nil, fmt.Errorf("oracle: invalid ref %q: %w", ref, err)
+	}
+	if !tableName.MatchString(table) {
+		return nil, nil, fmt.Errorf("oracle: invalid table name %q", table)
+	}
+	header, rows, err := selectFrom(ctx, dir, ref, table, columns, tail)
+	if errors.Is(err, errTableAbsent) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("oracle: reading %s AS OF %s: %w", table, ref, err)
+	}
+	return header, rows, nil
+}
+
 func readIssue(ctx context.Context, dir, ref, issueID string) (*Row, error) {
 	if err := issueops.ValidateRef(ref); err != nil {
 		return nil, fmt.Errorf("oracle: invalid ref %q: %w", ref, err)
@@ -199,7 +227,17 @@ func sortEdges(edges []Row) {
 // errTableAbsent if the ref has no such table, an error wrapping
 // ErrRefUnresolvable if the ref does not resolve, otherwise the original error.
 func readTable(ctx context.Context, dir, ref, table, where string) ([]string, [][]doltcli.Cell, error) {
-	query := fmt.Sprintf("SELECT * FROM %s AS OF %s WHERE %s", table, doltcli.SQLQuote(ref), where) //nolint:gosec // G201 -- dolt sql -q has no bind-parameter API; ref is charset-validated and quoted, table is a fixed name, and where is built from quoted values only
+	return selectFrom(ctx, dir, ref, table, "*", "WHERE "+where)
+}
+
+// selectFrom reads the columns of table at ref, followed by tail, and classifies
+// a failure as readTable describes. columns and tail are built by the caller from
+// fixed text and quoted values only.
+func selectFrom(ctx context.Context, dir, ref, table, columns, tail string) ([]string, [][]doltcli.Cell, error) {
+	query := fmt.Sprintf("SELECT %s FROM %s AS OF %s", columns, table, doltcli.SQLQuote(ref)) //nolint:gosec // G201 -- dolt sql -q has no bind-parameter API; ref is charset-validated and quoted, table is a fixed name, and columns and tail are built by the caller from fixed text and quoted values only
+	if tail != "" {
+		query += " " + tail
+	}
 	header, rows, err := doltcli.Query(ctx, dir, query)
 	if err != nil {
 		return nil, nil, classify(ctx, dir, ref, table, err)

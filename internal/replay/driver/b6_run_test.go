@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/replay/compare"
 	"github.com/steveyegge/beads/internal/replay/doltcli"
 	"github.com/steveyegge/beads/internal/replay/replaytest"
 	"github.com/steveyegge/beads/internal/replay/translate"
@@ -26,16 +27,20 @@ func issueMember(t *testing.T, payload json.RawMessage, key string) (value any, 
 	return value, present
 }
 
+// mismatchFor returns the row-side mismatch of an issue at a step, and fails the
+// test if there is none or more than one. A candidate that is wrong on the rows
+// is usually wrong in the versions it stored too, and that finding is a row of its
+// own, category version-state, which versionMismatchFor reads.
 func mismatchFor(t *testing.T, f *fixtureRun, commit, issue string) Mismatch {
 	t.Helper()
 	var found []Mismatch
 	for _, m := range f.mismatches() {
-		if m.SourceCommit == commit && m.IssueID == issue {
+		if m.SourceCommit == commit && m.IssueID == issue && m.Category != compare.CategoryVersionState {
 			found = append(found, m)
 		}
 	}
 	if len(found) != 1 {
-		t.Fatalf("%d mismatch rows for %s at %s, want exactly 1 (all: %+v)", len(found), issue, commit, f.mismatches())
+		t.Fatalf("%d row mismatches for %s at %s, want exactly 1 (all: %+v)", len(found), issue, commit, f.mismatches())
 	}
 	return found[0]
 }

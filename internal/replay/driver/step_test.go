@@ -26,10 +26,15 @@ type fakeEnv struct {
 	plan      *translate.StepPlan
 	oracle    map[string]*oracle.View
 	candidate map[string]*oracle.View
+	// versioned is the work clone's second reader, the one over the versions the
+	// product stored. A step with none reports the row axis alone.
+	versioned CandidateReader
 	head      string
 	oracleErr error
 	execErr   func(translate.Action) error
 	calls     []string
+	// readDirs is the directory each row read was asked to look in.
+	readDirs []string
 }
 
 func (f *fakeEnv) log(format string, args ...any) {
@@ -62,9 +67,28 @@ func (f *fakeEnv) WorkHead(context.Context) (string, error) {
 	return f.head, nil
 }
 
-func (f *fakeEnv) CandidateView(_ context.Context, ref, issue string) (*oracle.View, error) {
-	f.log("candidate %s %s", ref, issue)
-	return f.candidate[issue], nil
+func (f *fakeEnv) WorkDataDir() string { return "workdata" }
+
+// Readers is the work clone's readers: the row reader, always, and the versioned
+// one when a test supplies it.
+func (f *fakeEnv) Readers() []CandidateReader {
+	readers := []CandidateReader{fakeRowReader{f}}
+	if f.versioned != nil {
+		readers = append(readers, f.versioned)
+	}
+	return readers
+}
+
+// fakeRowReader answers a row read from the fake's candidate views and logs it as
+// "candidate <ref> <issue>", the order the isolation test reads.
+type fakeRowReader struct{ env *fakeEnv }
+
+func (fakeRowReader) Name() string { return "row" }
+
+func (r fakeRowReader) Read(_ context.Context, dir, issueID, ref string) (State, error) {
+	r.env.log("candidate %s %s", ref, issueID)
+	r.env.readDirs = append(r.env.readDirs, dir)
+	return State{View: r.env.candidate[issueID]}, nil
 }
 
 // callsWithPrefix returns the indexes of the logged calls that start with prefix.

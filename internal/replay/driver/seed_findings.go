@@ -97,7 +97,7 @@ func (r *runner) compareBaseline(ctx context.Context, env stepEnv, base string, 
 		if err != nil {
 			return fmt.Errorf("baseline: read the oracle's issue %d of %d at %s: %w", i+1, len(ids), base, err)
 		}
-		got, err := env.CandidateView(ctx, head, id)
+		got, err := rowView(ctx, env, head, id)
 		if err != nil {
 			return fmt.Errorf("baseline: read the work clone's issue %d of %d at %s: %w", i+1, len(ids), head, err)
 		}

@@ -10,6 +10,7 @@ import (
 	"github.com/steveyegge/beads/internal/replay/doltcli"
 	"github.com/steveyegge/beads/internal/replay/oracle"
 	"github.com/steveyegge/beads/internal/replay/translate"
+	"github.com/steveyegge/beads/internal/replay/versions"
 )
 
 // Tools pins the binary a Run invocation replays through: the integration
@@ -183,6 +184,14 @@ func replaySteps(ctx context.Context, cfg RunConfig, r *runner, steps []Step) er
 		return err
 	}
 	r.enableRefused = refusal
+	if refusal != nil {
+		// Nothing is versioned, so the version axis has nothing to read: it says so for
+		// every issue, and never passes one.
+		env.versionedNotRun = notRunEnableRefused
+	}
+	if r.writeFence, err = workWriteFence(ctx, cfg); err != nil {
+		return err
+	}
 	if err := r.runSteps(ctx, env, steps); err != nil {
 		return err
 	}
@@ -223,6 +232,17 @@ func enableVersionedHistory(ctx context.Context, cfg RunConfig) (*EnableRefusal,
 	return nil, fmt.Errorf("switching versioned history on in the work clone: %w\n%s", err, out)
 }
 
+// workWriteFence reports whether the work clone's schema has the write fence, which
+// decides whether a change to a legacy record mints a version. The summary says so,
+// next to the counts of legacy records the version axis found.
+func workWriteFence(ctx context.Context, cfg RunConfig) (bool, error) {
+	head, err := headCommitOf(ctx, cfg.WorkDataDir)
+	if err != nil {
+		return false, fmt.Errorf("reading the work clone's schema: %w", err)
+	}
+	return versions.WriteFence(ctx, cfg.WorkDataDir, head)
+}
+
 // verifyNoLegacyRows is the check that the switch took. History that silently
 // stayed off would leave every created row legacy and a run that measured nothing
 // it claims to, so a legacy row is a harness error.
@@ -250,6 +270,9 @@ func verifyNoLegacyRows(ctx context.Context, cfg RunConfig) error {
 // work clone's, and the bd under test.
 type realEnv struct {
 	cfg RunConfig
+	// versionedNotRun is why the versioned reader looks at nothing, when it does not:
+	// the product would not turn versioned history on, so there are no versions.
+	versionedNotRun string
 }
 
 func (e realEnv) Plan(ctx context.Context, from, to string) (*translate.StepPlan, error) {
@@ -279,8 +302,16 @@ func (e realEnv) WorkHead(ctx context.Context) (string, error) {
 	return headCommitOf(ctx, e.cfg.WorkDataDir)
 }
 
-func (e realEnv) CandidateView(ctx context.Context, ref, issue string) (*oracle.View, error) {
-	return oracle.ReadView(ctx, e.cfg.WorkDataDir, ref, issue)
+func (e realEnv) WorkDataDir() string { return e.cfg.WorkDataDir }
+
+// Readers are the two ways the work clone is read: its rows, typed as the oracle's
+// are, and the versions the store minted. A run that has no versions to read keeps
+// the second reader in its place, which says so.
+func (e realEnv) Readers() []CandidateReader {
+	if e.versionedNotRun != "" {
+		return []CandidateReader{rowReader{}, notRunReader{reason: e.versionedNotRun}}
+	}
+	return []CandidateReader{rowReader{}, versionedReader{}}
 }
 
 // selectSample returns all of steps, copied, when n<=0 or n>=len(steps)
