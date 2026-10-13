@@ -55,7 +55,6 @@ go_test(
         "fork_bazel_evidence_pin_test.go",
         "fork_heavy_tiers_pin_test.go",
         "fork_integration_trigger_pin_test.go",
-        "fork_legacy_lanes_pin_test.go",
         "fork_macos_lane_pin_test.go",
         "fork_proxied_lane_pin_test.go",
         "fork_runner_labels_pin_test.go",
