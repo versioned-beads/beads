@@ -24,7 +24,7 @@ import (
 // is normal, and issue_versions is simply empty.
 //
 // Runs in the proxied-server lane only (BEADS_TEST_PROXIED_SERVER=1), like the
-// events-journal twin, TestServeActivatesTheEventsJournal.
+// events-journal twin, TestProxiedServerServeActivatesTheEventsJournal.
 
 // serverVersionRows counts issue_versions rows in one database on the shared test
 // Dolt container.
@@ -65,11 +65,11 @@ func serveOneMutation(t *testing.T, bd string, port int, p serverModeProject) in
 	return serverVersionRows(t, port, p.database) - before
 }
 
-// TestVersionedHistoryServeActivatesTheProviderFromItsOwnRow: two server-mode
+// TestProxiedServerVersionedHistoryServeActivatesTheProviderFromItsOwnRow: two server-mode
 // workspaces on one server. The one whose OWN row says on records a served
 // mutation; the one with no row does not, and does not inherit the other's answer.
 // Neither is helped by the environment, which is unset.
-func TestVersionedHistoryServeActivatesTheProviderFromItsOwnRow(t *testing.T) {
+func TestProxiedServerVersionedHistoryServeActivatesTheProviderFromItsOwnRow(t *testing.T) {
 	port := requireSharedProxiedServer(t)
 	t.Parallel()
 	bd := buildEmbeddedBD(t)
