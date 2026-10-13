@@ -35,6 +35,14 @@ go_test(
         "shipped_test.go",
         "workspace_test.go",
     ],
+    # The shipped-file tests read the scenario files, README.md, BUILD.bazel
+    # and the package's own Go sources. The package's managed partitions carry
+    # them without naming a scenario, so adding one needs no BUILD.bazel edit.
+    data = [
+        ":repo_doc_files",
+        ":repo_go_srcs",
+        ":repo_other_files",
+    ],
     embed = [":scenarios_lib"],
 )
 

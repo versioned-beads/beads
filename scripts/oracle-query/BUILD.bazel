@@ -17,8 +17,9 @@ go_binary(
 go_test(
     name = "oracle-query_test",
     srcs = ["cli_test.go"],
-    data = glob(["testdata/**"]),
+    data = glob(["testdata/**"]) + [":oracle-query"],
     embed = [":oracle-query_lib"],
+    env = {"ORACLE_QUERY_BIN": "$(rlocationpath :oracle-query)"},
     deps = ["//internal/testutil/bazeltest"],
 )
 
