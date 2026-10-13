@@ -22,15 +22,18 @@ import (
 // workflow that keeps the heavy test tiers running on every pull request into
 // integration while the sync replaces pr-risk.yml's copy of them (work package
 // W1, be-fxkoxb; ruling be-4y7b5s sections 3.4, 5.1 rule 4, 8.3 and 11, as
-// amended by be-bg8llq).
+// amended by be-bg8llq and, for the sixth edit, by be-jvluf7 section 3.5).
 //
 // The workflow is lifted, not written: its eight jobs come out of pr-risk.yml
-// and proxied-local-smoke.yml as they stand at forkHeavyBase with five edits
+// and proxied-local-smoke.yml as they stand at forkHeavyBase with six edits
 // and nothing else (a "Fork Heavy " name prefix, needs cut down to
 // build-embedded, the tier if: dropped, a Blacksmith runs-on made
-// ubuntu-latest, and, for managed-local-smoke alone, its Blacksmith-only cache
+// ubuntu-latest, for managed-local-smoke alone its Blacksmith-only cache
 // unit cut: the comment above it and the steps "Compute cache date" and
-// "Restore Blacksmith setup-go cache", which leaves six of its eight steps),
+// "Restore Blacksmith setup-go cache", which leaves six of its eight steps,
+// and, for test-proxied-cmd alone, one env entry on its "Test proxied-server
+// cmd shard" step, BEADS_TEST_SHARD_MANIFEST naming the fork's own 15-shard
+// split so the lane stops reading upstream's manifest),
 // plus one aggregator, "Fork Heavy Tiers / Required", that fails unless every
 // other job's result is exactly success. The acceptance criteria of the bead
 // are pinned like this:
@@ -43,7 +46,10 @@ import (
 //     TestForkHeavyTiersNamesOnlyHelpersThatExist,
 //     TestForkHeavyTiersJobsKeepTheirShape and
 //     TestForkHeavyTiersLiftMatchesSourceBlobs.
-//   - 3, R8 and R9 over both workflow files: fork_proxied_lane_pin_test.go.
+//   - 3, R9 over the lane's one workflow: fork_proxied_lane_pin_test.go. R8,
+//     the coverage of the fork's manifest, and the pin that the shard script
+//     still honors the override the sixth edit sets, are
+//     fork_proxied_manifest_pin_test.go (be-jvluf7 section 4).
 //
 // Those two source files are carried in the tree, not read from git history:
 // scripts/testdata/fork-heavy-tiers holds each one byte for byte as `git show
@@ -64,7 +70,10 @@ import (
 // Every pin here asserts a pre-sync shape, so each is gone or re-pointed in the
 // sync pull request (ruling section 11). When rbe-fork opens to vb and the
 // workflow is retired, delete the workflow, this file, its line in
-// scripts/BUILD.bazel, the fixtures under scripts/testdata/fork-heavy-tiers and
+// scripts/BUILD.bazel, the fixtures under scripts/testdata/fork-heavy-tiers,
+// scripts/ci/fork-proxied-cmd-shards.txt with scripts/fork_proxied_manifest_pin_test.go
+// and its entries in go_test_sources_test (be-jvluf7 section 11.2: the sixth
+// edit goes with the workflow, and nothing reads the split any more) and
 // the "fork-heavy-tiers.yml": 3 entry, with its comment, that W4 adds to
 // scripts/pull_dolt_image_test.go after the sync (be-bg8llq sections 3.1 and
 // 4.4), together. A retirement that leaves that entry behind fails nothing,
@@ -178,6 +187,20 @@ var forkHeavyJobs = []forkHeavyJob{
 // YAML oracle sees the steps; TestForkHeavyTiersNamesNothingTheRulingBars sees
 // the comment. No other job has a step by either name.
 var forkHeavyDroppedSteps = []string{"Compute cache date", "Restore Blacksmith setup-go cache"}
+
+// Edit 6, ruled in be-jvluf7 section 3.5: the proxied lane reads the fork's own
+// 15-shard split and not upstream's manifest, through one env entry on the shard
+// step of test-proxied-cmd, at exactly one site. Nothing else in the workflow
+// names the variable. proxied-test-shard.sh has to honor it
+// (TestForkProxiedShardScriptReadsTheManifestOverride in
+// fork_proxied_manifest_pin_test.go holds it to that), and the helper-path scan
+// below reads this value, so it also proves the manifest file exists.
+const (
+	forkHeavyManifestJob  = "test-proxied-cmd"
+	forkHeavyManifestStep = "Test proxied-server cmd shard"
+	forkHeavyManifestEnv  = "BEADS_TEST_SHARD_MANIFEST"
+	forkHeavyManifestPath = "scripts/ci/fork-proxied-cmd-shards.txt"
+)
 
 // The keys a lifted job may have, all of which the source jobs have too.
 var forkHeavyJobKeys = []string{"name", "needs", "runs-on", "timeout-minutes", "strategy", "env", "steps"}
@@ -302,6 +325,66 @@ func forkHeavyKeptSteps(steps []any) []any {
 		}
 	}
 	return kept
+}
+
+// forkHeavyWithManifest applies edit 6 to a job's steps and returns how many
+// steps it set the entry on, which is the number of steps named
+// forkHeavyManifestStep. The step and its env are copied before the key goes in:
+// the parsed source is shared with every other lift that reads it, so an edit
+// made in place would reach the source itself.
+func forkHeavyWithManifest(steps []any) ([]any, int) {
+	out := make([]any, len(steps))
+	sites := 0
+	for i, step := range steps {
+		out[i] = step
+		fields, ok := step.(map[string]any)
+		if !ok || forkHeavyStepLabel(step) != forkHeavyManifestStep {
+			continue
+		}
+		sites++
+		stepCopy := make(map[string]any, len(fields)+1)
+		for key, value := range fields {
+			stepCopy[key] = value
+		}
+		env := map[string]any{}
+		if old, ok := fields["env"].(map[string]any); ok {
+			for key, value := range old {
+				env[key] = value
+			}
+		}
+		env[forkHeavyManifestEnv] = forkHeavyManifestPath
+		stepCopy["env"] = env
+		out[i] = stepCopy
+	}
+	return out, sites
+}
+
+// forkHeavyManifestSites lists every place in the lifted workflow's jobs that sets
+// forkHeavyManifestEnv: a job's env or a step's env. Edit 6 has exactly one.
+func forkHeavyManifestSites(jobs map[string]map[string]any) []string {
+	ids := make([]string, 0, len(jobs))
+	for id := range jobs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var sites []string
+	for _, id := range ids {
+		if env, ok := jobs[id]["env"].(map[string]any); ok {
+			if _, set := env[forkHeavyManifestEnv]; set {
+				sites = append(sites, fmt.Sprintf("job %s (job-level env)", id))
+			}
+		}
+		steps, _ := jobs[id]["steps"].([]any)
+		for _, step := range steps {
+			fields, _ := step.(map[string]any)
+			if env, ok := fields["env"].(map[string]any); ok {
+				if _, set := env[forkHeavyManifestEnv]; set {
+					sites = append(sites, fmt.Sprintf("job %s, step %q", id, forkHeavyStepLabel(step)))
+				}
+			}
+		}
+	}
+	return sites
 }
 
 func forkHeavyShow(value any) string {
@@ -603,13 +686,15 @@ func TestForkHeavyTiersNamesNothingTheRulingBars(t *testing.T) {
 // matches inside a longer path (internal/scripts/..., $WORKSPACE/scripts/...).
 var forkHeavyHelperPathRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_./-])(?:\./)?((?:\.github/scripts|scripts|tools)/[A-Za-z0-9_./-]+)`)
 
-// The helpers the lifted jobs run. If the scan below stops finding one, it has
+// The helpers the lifted jobs run, and the fork's shard manifest that edit 6
+// hands the proxied shard script. If the scan below stops finding one, it has
 // stopped reading the file and the existence check is passing for nothing.
 var forkHeavyKnownHelpers = []string{
 	".github/scripts/embedded-storage-test-shard.sh",
 	".github/scripts/embedded-test-shard.sh",
 	".github/scripts/proxied-test-shard.sh",
 	".github/scripts/server-storage-test-shard.sh",
+	forkHeavyManifestPath,
 	"scripts/ci/install-dolt.sh",
 	"scripts/ci/pull-dolt-image.sh",
 }
@@ -627,9 +712,6 @@ func TestForkHeavyTiersNamesOnlyHelpersThatExist(t *testing.T) {
 				continue
 			}
 			seen[path] = line.at
-			if strings.HasPrefix(path, "tools/") && os.Getenv("TEST_SRCDIR") != "" {
-				continue // scripts_test's runfiles hold no tools/; go test checks it
-			}
 			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
 				t.Errorf("%s %s runs %s, which is not in the tree: if upstream moved or deleted it, follow it here in the same change (ruling section 3.4): %v", forkHeavyTiersWorkflow, line.at, path, err)
 			}
@@ -756,11 +838,14 @@ func forkHeavySourceJobs(t *testing.T, file string) map[string]any {
 	return doc.Jobs
 }
 
-// forkHeavyLift applies the five ruled edits to a source job: the name gains the
+// forkHeavyLift applies the six ruled edits to a source job: the name gains the
 // prefix, needs go (the caller compares them as a set), the tier if: goes, a
-// Blacksmith runs-on becomes ubuntu-latest, and the steps of forkHeavyDroppedSteps
-// go (be-bg8llq; the comment above them is not YAML, so it is not here).
-func forkHeavyLift(t *testing.T, id string, source map[string]any) map[string]any {
+// Blacksmith runs-on becomes ubuntu-latest, the steps of forkHeavyDroppedSteps
+// go (be-bg8llq; the comment above them is not YAML, so it is not here), and,
+// for forkHeavyManifestJob alone, its forkHeavyManifestStep gains the
+// forkHeavyManifestEnv entry (be-jvluf7 section 3.5). The second result is how many
+// steps edit 6 reached, which the caller counts.
+func forkHeavyLift(t *testing.T, id string, source map[string]any) (map[string]any, int) {
 	t.Helper()
 	job := map[string]any{}
 	for key, value := range source {
@@ -776,21 +861,30 @@ func forkHeavyLift(t *testing.T, id string, source map[string]any) map[string]an
 	if runsOn, ok := job["runs-on"].(string); ok && strings.Contains(strings.ToLower(runsOn), "blacksmith") {
 		job["runs-on"] = "ubuntu-latest"
 	}
+	sites := 0
 	if steps, ok := job["steps"].([]any); ok {
-		job["steps"] = forkHeavyKeptSteps(steps)
+		steps = forkHeavyKeptSteps(steps)
+		if id == forkHeavyManifestJob {
+			steps, sites = forkHeavyWithManifest(steps)
+		}
+		job["steps"] = steps
 	}
-	return job
+	return job, sites
 }
 
 // Criterion 2, the lift diff. Every lifted job equals its job in the source
-// workflow at forkHeavyBase after the five ruled edits (section 3.4 as amended by
-// be-bg8llq section 2), and nothing else: not a retyped command, a loosened
-// timeout or a reworded step. Edit 5 fires for managed-local-smoke alone and takes
-// exactly the two steps of forkHeavyDroppedSteps, which the last check below
-// counts. The source is the digest-pinned fixtures (forkHeavySourceJobs), so this
-// pin needs no git history and has no skip: it runs in a shallow clone, in a
-// source archive with no .git and under Bazel, and an altered or missing fixture
-// fails it.
+// workflow at forkHeavyBase after the six ruled edits (section 3.4 as amended by
+// be-bg8llq section 2 and be-jvluf7 section 3.5), and nothing else: not a retyped
+// command, a loosened timeout or a reworded step. Edit 5 fires for
+// managed-local-smoke alone and takes exactly the two steps of
+// forkHeavyDroppedSteps, which the check after the loop counts; edit 6 fires for
+// the one "Test proxied-server cmd shard" step of test-proxied-cmd, which the next
+// check counts in the source, and the last check counts again in the workflow: an
+// entry that is missing, or copied to a second step or to a job's env, is not the
+// edit that was ruled. The source is the digest-pinned fixtures
+// (forkHeavySourceJobs), so this pin needs no git history and has no skip: it runs
+// in a shallow clone, in a source archive with no .git and under Bazel, and an
+// altered or missing fixture fails it.
 func TestForkHeavyTiersLiftMatchesSourceBlobs(t *testing.T) {
 	got := forkHeavyRawJobs(t)
 
@@ -803,7 +897,8 @@ func TestForkHeavyTiersLiftMatchesSourceBlobs(t *testing.T) {
 		return sources[file]
 	}
 
-	dropped := map[string]int{} // job id -> source steps edit 5 takes out of it
+	dropped := map[string]int{}       // job id -> source steps edit 5 takes out of it
+	manifestSites := map[string]int{} // job id -> source steps edit 6 sets the manifest entry on
 	for _, want := range forkHeavyJobs {
 		source, ok := sourceJobs(want.source)[want.id].(map[string]any)
 		if !ok {
@@ -823,17 +918,27 @@ func TestForkHeavyTiersLiftMatchesSourceBlobs(t *testing.T) {
 		}
 		delete(lifted, "needs")
 
-		expected := forkHeavyLift(t, want.id, source)
+		expected, sites := forkHeavyLift(t, want.id, source)
 		if diffs := forkHeavyDiff(want.id, expected, lifted); len(diffs) > 0 {
-			t.Errorf("job %s differs from %s:%s at %s by more than the five ruled edits (be-bg8llq):\n  %s", want.id, want.source, want.id, forkHeavyBase[:12], strings.Join(diffs, "\n  "))
+			t.Errorf("job %s differs from %s:%s at %s by more than the six ruled edits (be-bg8llq, be-jvluf7):\n  %s", want.id, want.source, want.id, forkHeavyBase[:12], strings.Join(diffs, "\n  "))
 		}
 		sourceSteps, _ := source["steps"].([]any)
 		keptSteps, _ := expected["steps"].([]any)
 		if cut := len(sourceSteps) - len(keptSteps); cut > 0 {
 			dropped[want.id] = cut
 		}
+		if sites > 0 {
+			manifestSites[want.id] = sites
+		}
 	}
 	if wantDropped := map[string]int{"managed-local-smoke": len(forkHeavyDroppedSteps)}; !reflect.DeepEqual(dropped, wantDropped) {
 		t.Errorf("edit 5 took steps %v out of the source jobs, want %v: it fires for managed-local-smoke alone and takes exactly %q (be-bg8llq section 2)", dropped, wantDropped, forkHeavyDroppedSteps)
+	}
+	if wantSites := map[string]int{forkHeavyManifestJob: 1}; !reflect.DeepEqual(manifestSites, wantSites) {
+		t.Errorf("edit 6 set %s on steps %v of the source jobs, want %v: it fires for the one %q step of job %s and no other (be-jvluf7 section 3.5)", forkHeavyManifestEnv, manifestSites, wantSites, forkHeavyManifestStep, forkHeavyManifestJob)
+	}
+	wantSite := fmt.Sprintf("job %s, step %q", forkHeavyManifestJob, forkHeavyManifestStep)
+	if sites := forkHeavyManifestSites(got); !slices.Equal(sites, []string{wantSite}) {
+		t.Errorf("%s sets %s at %d site(s) %q, want exactly one, %s: edit 6 gives that step the entry %s: %s and no other job or step has it (be-jvluf7 section 3.5; no site means the edit is not made yet, a second site means the entry was copied)", forkHeavyTiersWorkflow, forkHeavyManifestEnv, len(sites), sites, wantSite, forkHeavyManifestEnv, forkHeavyManifestPath)
 	}
 }
