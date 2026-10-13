@@ -47,11 +47,18 @@ var deniedEnvNames = []string{
 	"BEADS_BACKUP_ENABLED",
 }
 
-// buildCLI compiles this package's command into a temporary directory.
+// buildCLI returns this package's command. Under Bazel the sandbox holds no Go
+// toolchain, so the go_test names the go_binary as data and sets
+// ORACLE_QUERY_BIN to its runfile; elsewhere the command is compiled into a
+// temporary directory.
 func buildCLI(t *testing.T) string {
 	t.Helper()
 	if bazeltest.IsBazel() {
-		t.Skip("the command is built from source, which the Bazel sandbox does not hold; the go test lanes run this test")
+		bin, err := bazeltest.RunfileEnv("ORACLE_QUERY_BIN")
+		if err != nil {
+			t.Fatalf("locating the prebuilt command: %v", err)
+		}
+		return bin
 	}
 	goBin, err := exec.LookPath("go")
 	if err != nil {

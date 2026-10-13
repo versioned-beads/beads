@@ -208,6 +208,7 @@
 15 8 TestProxiedServerServeClaimNext
 15 8 TestProxiedServerSetState
 15 8 TestProxiedServerShow3B
+15 8 TestProxiedServerVersionedHistoryServeActivatesTheProviderFromItsOwnRow
 
 15 9 TestProxiedServerChildren
 15 9 TestProxiedServerComment

@@ -17,8 +17,9 @@ go_binary(
 go_test(
     name = "mutation-translator_test",
     srcs = ["cli_test.go"],
-    data = glob(["testdata/**"]),
+    data = glob(["testdata/**"]) + [":mutation-translator"],
     embed = [":mutation-translator_lib"],
+    env = {"MUTATION_TRANSLATOR_BIN": "$(rlocationpath :mutation-translator)"},
     deps = ["//internal/testutil/bazeltest"],
 )
 

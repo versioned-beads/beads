@@ -2,7 +2,6 @@ package scripts_test
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -10,23 +9,21 @@ import (
 )
 
 // This file is the fork's own (upstream has no copy, so syncs never conflict
-// on it). It pins what the fork adds to upstream's legacy proxied lane, the
-// test-proxied-cmd job of pr-risk.yml (upstream #7316 removed main.yml's copy:
-// push to main runs that tier under Bazel only) and, once W1 (be-fxkoxb) has
-// lifted it, the same-named job of fork-heavy-tiers.yml. That job runs
-// .github/scripts/proxied-test-shard.sh over the 15-shard block of
-// .github/scripts/proxied-cmd-test-shards.txt, and the fork keeps it because
-// BAZEL_COVERS_FORKS is off (fork_legacy_lanes_pin_test.go). Ruling be-sudqo0
-// adds two rules to it that no upstream test enforces:
+// on it). It pins what the fork adds to the lane it keeps for the proxied-server
+// cmd tests: the test-proxied-cmd job of fork-heavy-tiers.yml, which runs
+// .github/scripts/proxied-test-shard.sh over the 15 shards of the fork's own
+// split. The fork keeps the lane because bazel-proxied is skipped on vb in
+// cache mode (ruling be-4y7b5s section 4.2). Ruling be-sudqo0 added two rules to
+// it that no upstream test enforces; R9 is here and R8 is not:
 //
 //   - R9, the timeout budget: the test binary's own timeout is 25m, under a
 //     26m step timeout, under the unchanged 30m job timeout. Shards 3 and 5
 //     hit upstream's 15m panic in be-sudqo0, so 15m is a budget this lane can
 //     overrun, not only a hang detector.
-//   - R8, the 15-block's coverage: it lists every discovered TestProxiedServer*
-//     and TestServerMode* test exactly once. The script places a test the block
-//     does not list by hash(name) % 15, which is how a sync's new tests landed
-//     unbalanced on shard 5.
+//   - R8, the coverage of the split, lives in fork_proxied_manifest_pin_test.go
+//     with the pin that the shard script still honors the manifest override
+//     (be-jvluf7 section 4): the split is a file the fork owns now, and that
+//     file is in a different Bazel target from this one.
 //
 // R9 has a fifth value that no test below reads: the timeout column ("25m") of
 // the proxied-test-shard.sh row of bazelShardScripts, in
@@ -34,20 +31,15 @@ import (
 // TestBazelRetiredLanesCannotBeNarrowed holds that row equal to the script's
 // two timeouts, so a sync that re-applies the script re-applies the row too.
 //
-// Both rules live in lines a sync takes from upstream, so each test below fails
-// in the sync pull request, names what to put back, and leaves the fix to a
-// person. If upstream retires the lane, or the operator turns BAZEL_COVERS_FORKS
-// on, delete R9's edits and this file together, with its line in
-// scripts/BUILD.bazel and its two entries in
-// tools/bazel/equivalence_allowlist.txt (R8's lines are then harmless).
+// R9 lives in lines a sync takes from upstream, so the test below fails in the
+// sync pull request, names what to put back, and leaves the fix to a person.
+// The lane is temporary: when it retires with fork-heavy-tiers.yml, revert R9's
+// edits and delete this file together, with its line in scripts/BUILD.bazel.
 //
-// Where R9 looks. While both workflows hold the job, R9 covers pr-risk.yml and
-// fork-heavy-tiers.yml (ruling be-4y7b5s section 8.3), and the budgets are the
-// same three numbers in each. At the sync, pr-risk.yml leaves
-// forkProxiedLaneWorkflows by R9's own drop rule (a workflow leaves the pin only
-// when `git grep -c test-proxied-cmd` on it is 0, as it is in upstream's
-// pr-risk.yml), and fork-heavy-tiers.yml becomes the lane's one home. The
-// budgets never loosen.
+// Where R9 looks. R9 covers fork-heavy-tiers.yml, the lane's one home (ruling
+// be-jvluf7 section 4.5). pr-risk.yml left forkProxiedLaneWorkflows by R9's own
+// drop rule (a workflow leaves the pin only when `git grep -c test-proxied-cmd`
+// on it is 0, as it is in upstream's pr-risk.yml). The budgets never loosen.
 
 const (
 	forkProxiedLaneJob   = "test-proxied-cmd"
@@ -66,10 +58,11 @@ const (
 	forkProxiedR9Remedy = "take upstream's text, then re-apply R9 (be-sudqo0)"
 )
 
-// The workflows that hold the legacy proxied lane, and so the job R9's step and
-// job budgets are read from. fork-heavy-tiers.yml's copy is W1's lift of
-// pr-risk.yml's, with job id and step name verbatim (be-fxkoxb).
-var forkProxiedLaneWorkflows = []string{"pr-risk.yml", "fork-heavy-tiers.yml"}
+// The workflows that hold the proxied lane, and so the job R9's step and job
+// budgets are read from: fork-heavy-tiers.yml alone. Its job is W1's lift of
+// pr-risk.yml's, with job id and step name verbatim (be-fxkoxb); pr-risk.yml
+// holds no such job in upstream's text, which is R9's own rule for leaving the list.
+var forkProxiedLaneWorkflows = []string{"fork-heavy-tiers.yml"}
 
 // The two places proxied-test-shard.sh sets the test binary's timeout: the
 // compiled binary CI runs (-test.timeout=), and the go test fallback (-timeout).
@@ -78,13 +71,12 @@ var (
 	forkProxiedGoTestTimeoutRe = regexp.MustCompile(`\s-timeout (\d+)m\b`)
 )
 
-// R9. The three timeouts of the legacy proxied lane are 25m, 26m and 30m, in
-// that order, in the shard script and in each workflow that runs it: pr-risk.yml
-// and fork-heavy-tiers.yml (forkProxiedLaneWorkflows).
+// R9. The three timeouts of the proxied lane are 25m, 26m and 30m, in that
+// order, in the shard script and in each workflow that runs it
+// (forkProxiedLaneWorkflows: fork-heavy-tiers.yml). scripts_test's runfiles hold
+// the script and the workflow (//:repo_other_files), so this runs under Bazel and
+// has no skip.
 func TestForkLegacyProxiedLaneTimeoutBudget(t *testing.T) {
-	if os.Getenv("TEST_SRCDIR") != "" {
-		t.Skip("scripts_test's runfiles hold no .github/scripts")
-	}
 	script := readPolicyFile(t, sourceRepoRoot(t), forkProxiedShardFile)
 
 	scriptMinutes := 0
@@ -131,31 +123,4 @@ func TestForkLegacyProxiedLaneTimeoutBudget(t *testing.T) {
 				name, forkProxiedLaneJob, scriptMinutes, step.TimeoutMinutes, job.TimeoutMinutes, forkProxiedR9Remedy)
 		}
 	}
-}
-
-// R8. The legacy 15-block lists every discovered TestProxiedServer* and
-// TestServerMode* test exactly once. The generator's --check gates on name
-// coverage alone (it never compares shard assignments), which is the whole of
-// the rule: the block is topped up, never repacked.
-//
-// Upstream's TestProxiedShardManifestGeneratorNotStale checks only the Bazel
-// lane's 30-block and leaves the frozen 15-block out, because a --check against
-// it would always fail by design there. R8 tops the fork's block up, so the
-// same check passes here and this test holds it.
-func TestForkLegacyProxiedBlockCoversEveryTest(t *testing.T) {
-	if os.Getenv("TEST_SRCDIR") != "" {
-		t.Skip("scripts_test's runfiles hold neither the generator's sources nor cmd/bd")
-	}
-	python := requireHostTool(t, "python3")
-	cmd := exec.Command(python, "scripts/ci/gen_proxied_shard_manifest.py", "15", "--check")
-	cmd.Dir = sourceRepoRoot(t)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		return
-	}
-	t.Errorf("the 15-shard block of .github/scripts/proxied-cmd-test-shards.txt does not list every discovered TestProxiedServer*/TestServerMode* test exactly once (R8, be-sudqo0): %v\n%s\n"+
-		"Fix: run `python3 scripts/ci/gen_proxied_shard_manifest.py 15 --write`, the plain incremental top-up (it keeps every existing line and places only the new names), and commit the result. "+
-		"Do not follow a `Run:` line above that adds --weights=duration, and never pass --repack: the 15-block is not repacked. "+
-		"If the top-up puts a new heavy test on a shard the V2 table of be-sudqo0 shows to be busy, relocate that one new line only, never a line that already existed, and record it in the sync pull request.",
-		err, out)
 }

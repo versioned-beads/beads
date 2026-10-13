@@ -774,7 +774,8 @@ class SmokeDeadlines(unittest.TestCase):
     @staticmethod
     def job_timeout_minutes(name):
         # Plain text on purpose: the lane that runs this file has no YAML dependency.
-        lines = (Path(__file__).resolve().parents[2] / ".github/workflows/pr.yml").read_text().splitlines()
+        # The job lives in fork-qualification.yml (be-jvluf7 section 3.5), not pr.yml.
+        lines = (Path(__file__).resolve().parents[2] / ".github/workflows/fork-qualification.yml").read_text().splitlines()
         headers = [i for i, line in enumerate(lines) if re.fullmatch(r"  [\w-]+:\s*", line)]
         named = [i for i, line in enumerate(lines) if line == "    name: " + name]
         if len(named) != 1:

@@ -6,22 +6,28 @@ name: Fork Heavy Tiers
 # copy of them: Embedded Dolt (build, storage, conformance and cmd shards),
 # Proxied Dolt cmd shards, Server Dolt (conformance and full-suite shards) and
 # the managed-local proxied lifecycle lane. Work package W1, be-fxkoxb; ruling
-# be-4y7b5s sections 3.4, 5.1 rule 4, 8.3 and 11, as amended by be-bg8llq.
+# be-4y7b5s sections 3.4, 5.1 rule 4, 8.3 and 11, as amended by be-bg8llq and,
+# for edit 6, by be-jvluf7 section 3.5.
 #
 # The eight jobs are lifted, not written: they come out of the git blobs of
 # pr-risk.yml (seven jobs) and proxied-local-smoke.yml (managed-local-smoke) at
-# 356275a13290, vb/integration when W1 was cut, with five edits and nothing else:
+# 356275a13290, vb/integration when W1 was cut, with six edits and nothing else:
 #   1. the job name gains the prefix "Fork Heavy ";
 #   2. needs is cut down to build-embedded (build-embedded and
 #      managed-local-smoke have none);
 #   3. the tier if: is dropped, so every job runs on every pull request;
 #   4. a runs-on that named a pooled runner becomes ubuntu-latest;
 #   5. managed-local-smoke alone loses its pooled-runner cache unit, the comment
-#      above it and its two steps, which leaves six of its eight.
+#      above it and its two steps, which leaves six of its eight;
+#   6. test-proxied-cmd alone gains one env entry on its "Test proxied-server
+#      cmd shard" step, BEADS_TEST_SHARD_MANIFEST naming this repository's own
+#      15-shard split (scripts/ci/fork-proxied-cmd-shards.txt), so the lane
+#      stops reading upstream's manifest (be-jvluf7 section 3.5).
 # Job ids and step names are the sources', so the proxied-lane pins in
 # scripts/fork_proxied_lane_pin_test.go read test-proxied-cmd here as they read
-# it in pr-risk.yml. The comments that sat between jobs in pr-risk.yml describe
-# its tier selection and are not carried.
+# it in pr-risk.yml, and scripts/fork_proxied_manifest_pin_test.go holds the
+# shard script to honoring the entry edit 6 sets. The comments that sat between
+# jobs in pr-risk.yml describe its tier selection and are not carried.
 #
 # "Fork Heavy Tiers / Required" fails unless every other job's result is exactly
 # success, skipped included: a skipped heavy tier is the silent gap this
@@ -287,6 +293,7 @@ jobs:
           BEADS_TEST_PROXIED_SERVER: "1"
           BEADS_TEST_BD_BINARY: /tmp/bd-proxied
           BEADS_TEST_CMD_BINARY: /tmp/bd-cmd-test
+          BEADS_TEST_SHARD_MANIFEST: scripts/ci/fork-proxied-cmd-shards.txt
         run: bash .github/scripts/proxied-test-shard.sh ${{ matrix.shard }} 15
 
   test-server-storage:

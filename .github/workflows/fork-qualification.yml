@@ -1,0 +1,350 @@
+name: Fork Qualification
+
+# This repository's own workflow (upstream has no copy, so syncs never conflict
+# on it; rule M1, be-6i64d8). It keeps the qualification the upstream sync would
+# otherwise leave without a home: the graph-core job that pr.yml carried in the
+# fork, the replay harness's census that PR Core's fail-loud run was, and the
+# build that feeds both. Work package W2, be-67atam; ruling be-jvluf7 section
+# 3.5, which supersedes be-4y7b5s where they differ.
+#
+# Three jobs and an aggregator:
+#   build-artifacts  builds this commit's bd once and uploads it as
+#                    fork-build-artifacts. Upstream's artifact name stays
+#                    upstream's; nothing here uploads or downloads it. Lifted
+#                    from pr.yml's job of the same id with three edits: the name
+#                    gains the prefix "Fork ", needs and the tier if: are dropped
+#                    (it runs on every pull request), and the artifact is the
+#                    fork's own.
+#   graph-c0         the graph-core job moved here from pr.yml as the fork
+#                    carried it. Its display name, its 90-minute cap and its two
+#                    qualification steps in their order are what
+#                    scripts/ci/graph-c0-verifier-test.py and
+#                    scripts/fork_qualification_pin_test.go find it by. The only
+#                    edit is the artifact it downloads.
+#   replay-census    a census, not a lane. It computes at run time the packages
+#                    of ./internal/replay/... and every package whose test or
+#                    external test imports a path ending /internal/replay/replaytest,
+#                    prints them, and runs one go test over them with the flags
+#                    of the go_test line in scripts/ci/pr-core.sh. It fails,
+#                    running nothing, when ./internal/replay/... lists no package
+#                    or the computed list is empty, so a renamed or moved harness
+#                    cannot pass with nothing run. The fail-loud flag that turns a
+#                    missing dolt or commit from a skip into a failure is set in
+#                    that one step's env and nowhere else: replaytest cannot get
+#                    bd inside a Bazel sandbox, so a wider scope would fail every
+#                    test that needs it there, and the census is never a Bazel
+#                    target.
+#
+# "Fork Qualification / Required" fails unless every other job's result is
+# exactly success, skipped included: a skipped qualification job is the silent
+# gap this workflow exists to close.
+#
+# It runs beside pr.yml and pr-risk.yml, not inside them. It is not in CI Gate's
+# needs, so it can neither delay nor fail that gate; read its result as the
+# graph and replay signal it is. scripts/fork_qualification_pin_test.go pins this
+# file, and runs the census step's own script against fixture modules.
+
+on:
+  pull_request:
+    branches: [ integration ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BD_DISABLE_METRICS: "1"
+  BD_DISABLE_EVENT_FLUSH: "1"
+
+jobs:
+  build-artifacts:
+    name: Fork Build Artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: beads-go-mod-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: beads-go-mod-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-
+
+      - name: Restore non-race Go build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-cache/non-race
+          key: beads-go-build-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-base-gms_pure_go-non-race-${{ github.sha }}
+          restore-keys: beads-go-build-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-base-gms_pure_go-non-race-
+
+      - name: Build reusable Linux artifacts
+        env:
+          GOCACHE: ${{ runner.temp }}/go-cache/non-race
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          source ./.buildflags
+          go_version="$(go version)"
+          commit="$(git rev-parse HEAD)"
+          go build -tags gms_pure_go -o artifacts/bd-linux-gms-pure ./cmd/bd
+          chmod +x artifacts/bd-linux-gms-pure
+          (
+            cd artifacts
+            sha256sum bd-linux-gms-pure > SHA256SUMS
+          )
+          {
+            echo "commit=${commit}"
+            echo "go_version=${go_version}"
+            echo "build_tags=${BEADS_BUILD_TAGS}"
+            echo "artifact=bd-linux-gms-pure"
+          } > artifacts/build-manifest.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fork-build-artifacts
+          path: artifacts/
+          retention-days: 1
+          if-no-files-found: error
+
+  # Required graph-core checkpoint, including the installed mixed workflow and
+  # optional-by-default real-engine tests. Never infer this capability from a normal suite with service skips.
+  graph-c0:
+    name: Graph core / real engines, installed CLI and BDP
+    needs: build-artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fork-build-artifacts
+          path: ${{ runner.temp }}/graph-c0-build
+      - name: Install exact CLI and pinned qualification Dolt
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/graph-c0-bin" "$RUNNER_TEMP/graph-c0-download"
+          cd "$RUNNER_TEMP/graph-c0-build"
+          sha256sum --check SHA256SUMS
+          install -m 0755 bd-linux-gms-pure "$RUNNER_TEMP/graph-c0-bin/bd"
+          cd "$RUNNER_TEMP/graph-c0-download"
+          curl --fail --location --retry 3 --max-time 120 -o dolt.tar.gz \
+            https://github.com/dolthub/dolt/releases/download/v2.1.8/dolt-linux-amd64.tar.gz
+          echo 'f66318f08ed66e409fc39363ae0fff8ce6fbf6dba9f5bac632b91527b9632a74  dolt.tar.gz' | sha256sum --check
+          tar -xzf dolt.tar.gz
+          install -m 0755 dolt-linux-amd64/bin/dolt "$RUNNER_TEMP/graph-c0-bin/dolt"
+      - name: Install pinned independent-client runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.16.0'
+      - name: Build separately pinned public BDP client
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bdp-client-build"
+          mkdir "$RUNNER_TEMP/bdp-client-53bdbd0"
+          cd "$RUNNER_TEMP/bdp-client-53bdbd0"
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
+          {
+            git init
+            git -c credential.helper= fetch --depth=1 https://github.com/gastownhall/bdp.git \
+              53bdbd03136875f952af184fce7b3c7af8f74e96
+            git checkout --detach FETCH_HEAD
+            test "$(git rev-parse HEAD)" = 53bdbd03136875f952af184fce7b3c7af8f74e96
+            npm install --global --ignore-scripts pnpm@11.20.0
+            test "$(node --version)" = v24.16.0
+            test "$(pnpm --version)" = 11.20.0
+            pnpm install --frozen-lockfile --ignore-scripts
+            pnpm exec tsc -b packages/client
+            test -z "$(git status --porcelain --untracked-files=all)"
+            python3 - <<'PYCLIENT'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path.cwd()
+          files = {p for p in subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0') if p}
+          for package in ['client', 'protocol']:
+              files.update(str(p.relative_to(root)) for p in (root / 'packages' / package / 'dist').rglob('*') if p.is_file())
+          manifest = {
+              'source': 'gastownhall/bdp',
+              'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'source_method': 'unauthenticated exact-commit fetch into separate checkout',
+              'node': subprocess.check_output(['node', '--version'], text=True).strip(),
+              'pnpm': subprocess.check_output(['pnpm', '--version'], text=True).strip(),
+              'install': 'pnpm install --frozen-lockfile --ignore-scripts',
+              'build': 'pnpm exec tsc -b packages/client',
+              'passed': True,
+              'http_interop': False,
+              'files': {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in sorted(files)},
+          }
+          (pathlib.Path(os.environ['RUNNER_TEMP']) / 'bdp-client-build/client-build.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          PYCLIENT
+          } 2>&1 | tee "$RUNNER_TEMP/bdp-client-build/build.log"
+      - name: Check required-test verifier negative controls
+        run: python3 scripts/ci/graph-c0-verifier-test.py
+      - name: Run complete graph and BDP qualification without skips
+        run: |
+          export PATH="$RUNNER_TEMP/graph-c0-bin:$PATH"
+          python3 scripts/ci/graph-c0-qualify.py \
+            --bd "$RUNNER_TEMP/graph-c0-bin/bd" \
+            --dolt "$RUNNER_TEMP/graph-c0-bin/dolt" \
+            --artifacts "$RUNNER_TEMP/graph-c0-build" \
+            --bdp-checkout "$RUNNER_TEMP/bdp-client-53bdbd0" \
+            --client-manifest "$RUNNER_TEMP/bdp-client-build/client-build.json" \
+            --node "$(command -v node)" \
+            --output "$RUNNER_TEMP/graph-c0-evidence"
+      - name: Preserve complete and failed qualification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: graph-c0-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/graph-c0-evidence/
+            ${{ runner.temp }}/graph-c0-build/build-manifest.txt
+            ${{ runner.temp }}/graph-c0-build/SHA256SUMS
+            ${{ runner.temp }}/bdp-client-build/
+          retention-days: 14
+          if-no-files-found: error
+
+  # The replay-harness census (be-jvluf7 section 3.5): the replay tests, run
+  # where a missing tool or commit is a failure. The package list is computed in
+  # the one step that runs go test, so there is no hand-kept list to go stale and
+  # no second place for the discovery to disagree with the run; the job is
+  # unconditional (a skipped job fails the aggregator) and plain go test, never
+  # make or Bazel. Setup is PR Core's, minus what only the wrapper needed.
+  replay-census:
+    name: Fork Replay Census
+    runs-on: ubuntu-latest
+    needs: [build-artifacts]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          # Replay scenarios build older bd binaries from pinned commits, and
+          # the fail-loud flag below makes a missing commit a failure, so this
+          # required job carries the history.
+          fetch-depth: 0
+
+      - name: Set up Go
+        id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: beads-go-mod-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: beads-go-mod-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-
+
+      - name: Restore race Go build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-cache/race
+          key: beads-go-build-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-base-gms_pure_go-race-${{ github.sha }}
+          restore-keys: beads-go-build-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-base-gms_pure_go-race-
+
+      - name: Install Dolt
+        run: ./scripts/ci/install-dolt.sh
+
+      - name: Configure Git and Dolt identity
+        run: |
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@beads.test"
+          dolt config --global --add user.name "CI Bot"
+          dolt config --global --add user.email "ci@beads.test"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fork-build-artifacts
+          path: fork-build-artifacts
+
+      - name: Verify build artifacts
+        run: |
+          set -euo pipefail
+          cd fork-build-artifacts
+          sha256sum -c SHA256SUMS
+          chmod +x bd-linux-gms-pure
+
+      - name: Run replay census
+        env:
+          BEADS_TEST_REQUIRE_EXCLUDE_PERMISSION: '1'
+          BEADS_TEST_BD_BINARY: ${{ github.workspace }}/fork-build-artifacts/bd-linux-gms-pure
+          GOCACHE: ${{ runner.temp }}/go-cache/race
+          # The replay harness's tests need the dolt CLI, the Go toolchain and
+          # the full git history, all provided above. With REPLAY_REQUIRE=1 a
+          # missing tool or commit fails them instead of skipping them, so this
+          # required check cannot pass without the harness having run. Set here
+          # and nowhere else: a Bazel sandbox cannot give replaytest a bd.
+          REPLAY_REQUIRE: '1'
+        run: |
+          set -euo pipefail
+          source ./.buildflags
+          # Every package of ./internal/replay/..., plus every package whose
+          # test or external test imports a path ending /internal/replay/replaytest,
+          # found now and printed, so a scenario package added elsewhere is
+          # covered the day it lands. A tree that lists no replay package, or a
+          # computed list that is empty, fails before go test runs: a moved or
+          # renamed harness must not pass with nothing run.
+          replay_pkgs="$(go list ./internal/replay/...)"
+          if [ -z "$replay_pkgs" ]; then
+            echo "::error::go list ./internal/replay/... matched no packages: the replay harness moved or was renamed"
+            exit 1
+          fi
+          importers="$(go list -e -f '{{.ImportPath}} {{join .TestImports " "}} {{join .XTestImports " "}}' ./... | awk '{ for (i = 2; i <= NF; i++) if ($i ~ /\/internal\/replay\/replaytest$/) { print $1; break } }')"
+          packages="$(printf '%s\n%s\n' "$replay_pkgs" "$importers" | sed '/^$/d' | sort -u)"
+          if [ -z "$packages" ]; then
+            echo "::error::the replay census found no package to run"
+            exit 1
+          fi
+          echo "Replay census packages:"
+          echo "$packages"
+          # The flags of the go_test line in scripts/ci/pr-core.sh, plus the
+          # literal gms_pure_go tag that the workflow-tags check
+          # (//scripts/repochecks:workflow_tags_test) requires of a direct go
+          # command; .buildflags exports the same tag through GOFLAGS.
+          go test -tags gms_pure_go -p 4 -parallel 4 -race -short -timeout=30m -skip '^TestEmbedded' $packages
+
+  # Fails unless every job above succeeded. None of them is conditional, so a
+  # skipped result means a need failed or the run was cut short, and that fails
+  # the gate too: ci-gate.sh counts skipped as a failure unless the variable is
+  # in CI_GATE_SKIPPED_OK, which nothing is here.
+  fork-qualification-gate:
+    name: Fork Qualification / Required
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - build-artifacts
+      - graph-c0
+      - replay-census
+    if: ${{ always() }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Evaluate CI gate
+        env:
+          CI_GATE_NAME: Fork Qualification
+          CI_GATE_REQUIRED: >-
+            BUILD_ARTIFACTS
+            GRAPH_C0
+            REPLAY_CENSUS
+          BUILD_ARTIFACTS: ${{ needs.build-artifacts.result }}
+          GRAPH_C0: ${{ needs.graph-c0.result }}
+          REPLAY_CENSUS: ${{ needs.replay-census.result }}
+        run: bash .github/scripts/ci-gate.sh
