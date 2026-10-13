@@ -6,6 +6,9 @@
 // run, plus what the step changed that cannot be replayed (see StepPlan and the
 // table policy). Classify is the same plan seen from one issue. ExecuteWith runs
 // an action through a bd binary the caller names; nothing here finds bd on PATH.
+// Execute is that run for an action to be accounted for: it pins the commit mode
+// and the actor, and reports the work clone's history from before the action to
+// after it.
 package translate
 
 import (

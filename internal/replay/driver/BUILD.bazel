@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "driver",
     srcs = [
+        "accounting.go",
         "bd.go",
         "integration.go",
         "journal.go",
@@ -44,6 +45,8 @@ go_test(
         "b11a_run_test.go",
         "b11a_seam_test.go",
         "b11a_summary_test.go",
+        "b11b_fixture_test.go",
+        "b11b_run_test.go",
         "b6_fixture_test.go",
         "b6_run_test.go",
         "b7_fixture_test.go",

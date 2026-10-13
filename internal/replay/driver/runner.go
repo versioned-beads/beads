@@ -33,6 +33,15 @@ type runner struct {
 	versionReads map[string]int
 	writeFence   bool
 
+	// legacyChanges and participatingChanges count the real changes the commands made,
+	// by whether the issue was a legacy record before the command. findings counts what
+	// the version accounting found wrong, by category, and removedMarked is whether a
+	// command was seen to put a removal mark on a version.
+	legacyChanges        int
+	participatingChanges int
+	findings             map[string]int
+	removedMarked        bool
+
 	// baseline and enableRefused are what a seeded run found before its first step:
 	// how the work clone compared with the oracle at the base, and whether the
 	// product refused to turn versioned history on. Both stay nil on a run that did
@@ -55,6 +64,7 @@ func newRunner(runID string, store *Store, observer Observer) *runner {
 
 		rowReads:     map[string]int{},
 		versionReads: map[string]int{},
+		findings:     map[string]int{},
 	}
 }
 
@@ -143,6 +153,17 @@ func (r *runner) record(ctx context.Context, st Step, out *stepOutcome) error {
 				return fmt.Errorf("write mismatch for %s: %w", res.IssueID, err)
 			}
 		}
+		// The accounting's findings follow, each filed under the issue it is about, which
+		// is not always the issue of this row.
+		for _, f := range oc.Accounted {
+			row := Mismatch{
+				RunID: r.runID, Step: st.Index, SourceCommit: res.SourceCommit, IssueID: f.Issue,
+				Category: f.Category, Section: f.Section, ExpectedJSON: f.Expected, ActualJSON: f.Actual,
+			}
+			if err := r.store.WriteMismatch(row); err != nil {
+				return fmt.Errorf("write %s finding for %s: %w", f.Category, f.Issue, err)
+			}
+		}
 		r.foldResult(res)
 		if r.observer != nil {
 			ev := StepIssueResult{Step: st.Index, Merge: st.Merge, Net: st.Net, WriteLatency: oc.WriteLatency, Result: res}
@@ -165,10 +186,19 @@ func (r *runner) foldGap(row CoverageGapRow) {
 }
 
 // foldResult counts a result row into the run's totals: its verdict, what each axis
-// found, the number it could not compare exactly on either axis, and the columns an
-// untranslatable issue has no bd form for.
+// found, the number it could not compare exactly on either axis, the columns an
+// untranslatable issue has no bd form for, and what the version accounting made of the
+// commands run for it.
 func (r *runner) foldResult(res CommitReplayResult) {
 	r.verdicts[res.Verdict]++
+	if a := res.Accounting; a != nil {
+		r.legacyChanges += a.LegacyChanges
+		r.participatingChanges += a.ParticipatingChanges
+		for category, n := range a.Findings {
+			r.findings[category] += n
+		}
+		r.removedMarked = r.removedMarked || a.RemovedMarked
+	}
 	if res.RowVerdict != "" {
 		r.rowReads[string(res.RowVerdict)]++
 	}
@@ -199,7 +229,9 @@ type Summary struct {
 	// CoveredRange is the part of the history the steps stand for.
 	CoveredRange CoveredRange `json:"covered_range"`
 	// Verdicts counts the (step, issue) rows by verdict; every verdict is listed,
-	// the ones that did not occur with a zero.
+	// the ones that did not occur with a zero. matched counts the rows with no finding:
+	// it does not mean versioned, since a version-legacy read is counted in it. The
+	// evidence that versions were checked is in versioned_reads.
 	Verdicts map[string]int `json:"verdicts"`
 	// Gaps are the holes in what was replayed.
 	Gaps Gaps `json:"gaps"`
@@ -248,6 +280,34 @@ type VersionedReads struct {
 	// has, and version-legacy and version-not-run with its reason. The last two are
 	// neither a pass nor a mismatch.
 	Version map[string]int `json:"version"`
+	// LegacyChanges and ParticipatingChanges count the real changes the replay's
+	// commands made: one for each command and issue for which Dolt's own diff of the
+	// durable projection shows a change, classified once, at the head before the
+	// command, by whether the issue was then a legacy record (participation_generation
+	// NULL) or took part in versioned history. A command that changed nothing for an
+	// issue counts for it in neither, and together they are the real changes the ledger
+	// recorded. Both are always written, zeros included.
+	//
+	// Reading rule: the version-verified evidence is version.matched for reads and
+	// participating_changes for changes, and legacy_changes is added to neither. A
+	// legacy_changes of 0 makes the fence check vacuous and says nothing about the
+	// fence; a participating_changes of 0 means versioning was not exercised. Both are
+	// reported and neither is an error. A run without the write fence does not check
+	// the fence, so its legacy_changes is 0.
+	LegacyChanges        int `json:"legacy_changes"`
+	ParticipatingChanges int `json:"participating_changes"`
+	// Findings counts what the version accounting found wrong, by category. Every
+	// category is listed, the ones that did not occur with a zero, and each is the
+	// number of mismatch rows of that category the run wrote. version-gap is the
+	// exception: it is a real change the product is known to mint no version for, so it
+	// is counted and is not a mismatch row.
+	Findings map[string]int `json:"findings"`
+	// RemovedMarking says whether the run saw a command put a removal mark on a version
+	// row. The product does not in production: removed_at is never set, so a run that
+	// watched for it and saw nothing says not-in-production, and a green run cannot be
+	// read as having covered the restriction that a removed version is read-only. A run
+	// that saw a mark says observed.
+	RemovedMarking string `json:"removed_marking"`
 }
 
 // DurableStateLossy is the fidelity boundary of the version axis: the fields whose
@@ -311,13 +371,37 @@ func (r *runner) summarize(run ReplayRun, w *Walk, steps []Step, seed *SeedRecor
 		Baseline:       r.baseline,
 		EnableRefused:  r.enableRefused,
 		VersionedReads: &VersionedReads{
-			WriteFence: r.writeFence,
-			Row:        axisCounts(r.rowReads, rowAxisValues),
-			Version:    axisCounts(r.versionReads, versionAxisValues),
+			WriteFence:           r.writeFence,
+			Row:                  axisCounts(r.rowReads, rowAxisValues),
+			Version:              axisCounts(r.versionReads, versionAxisValues),
+			LegacyChanges:        r.legacyChanges,
+			ParticipatingChanges: r.participatingChanges,
+			Findings:             r.findingCounts(),
+			RemovedMarking:       r.removedMarking(),
 		},
 		DurableStateLossy:    &DurableStateLossy{Basis: versions.LossyBasis, Fields: versions.Lossy()},
 		DurableStateExcludes: versions.Excludes(),
 	}
+}
+
+// findingCounts lists every category of finding with its count, zero where it did not
+// occur. A category that is not one of them is listed too, so the counts still add up.
+func (r *runner) findingCounts() map[string]int {
+	out := copyCounts(r.findings)
+	for _, category := range findingCategories {
+		if _, ok := out[category]; !ok {
+			out[category] = 0
+		}
+	}
+	return out
+}
+
+// removedMarking is the summary's account of whether a removal mark was ever seen.
+func (r *runner) removedMarking() string {
+	if r.removedMarked {
+		return removedMarkingObserved
+	}
+	return removedMarkingNotInProduction
 }
 
 // axisCounts lists every value an axis can take with its count, zero where it did
