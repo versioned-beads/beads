@@ -45,7 +45,10 @@ import (
 //     repository and actor, and every rbe mode this repository can reach: none
 //     because rbe was skipped, skip, cache, local, fork-ro, fork-rw) no runs-on
 //     may resolve to a Blacksmith label, and no matrix cell may spell one
-//     unless runs-on reads it and the evaluation above clears it.
+//     unless runs-on reads it and the evaluation above clears it. A runs-on that
+//     spells one resolves there to a GitHub-hosted label (ubuntu-*, windows-*,
+//     macos-*) and to nothing else: whatever it falls back to is a runner
+//     somebody serves.
 //   - In gastownhall's world (the same, plus rbe mode remote) a runs-on that
 //     spells a Blacksmith label must still resolve to one: a guard must not
 //     disable upstream's own pool (a typo in the owner, an inverted operator, a
@@ -76,7 +79,8 @@ var (
 	// forkBlacksmithAny: a runner label, resolved, that names Blacksmith at all.
 	forkBlacksmithAny = regexp.MustCompile(`(?i)blacksmith`)
 	// forkHostedLabel: a GitHub-hosted runner, which is all a fork-owned
-	// workflow may resolve to.
+	// workflow may resolve to, and all a runs-on that spells a Blacksmith label
+	// may fall back to in the fork's world.
 	forkHostedLabel = regexp.MustCompile(`^(ubuntu|windows|macos)-`)
 )
 
@@ -726,7 +730,7 @@ func forkRunnerResolve(node *yaml.Node, m forkRunnerMatrix, owned bool) forkRunn
 	if !strings.Contains(text, "${{") {
 		site.evaluated, site.reached = true, site.spelled
 		if forkRunnerBad(text, owned) {
-			site.leak = "is the literal label " + strconv.Quote(text) + forkRunnerWhyBad(owned)
+			site.leak = "is the literal label " + strconv.Quote(text) + forkRunnerWhyBad(text, owned)
 		}
 		return site
 	}
@@ -776,14 +780,25 @@ func forkRunnerResolve(node *yaml.Node, m forkRunnerMatrix, owned bool) forkRunn
 			}
 		}
 	}
-	found, err := forkRunnerFirst(forkRunnerForkWorld, text, keys, m, func(label string) bool { return forkRunnerBad(label, owned) })
+	// forkRunnerBad refuses a Blacksmith label and nothing else outside a
+	// fork-owned workflow, so a site that spells one could fall back to "macos" or
+	// "self-hosted" and pass: what it falls back to must be a label GitHub hosts.
+	// The empty label is forkRunnerUnset's, below.
+	var bad string
+	found, err := forkRunnerFirst(forkRunnerForkWorld, text, keys, m, func(label string) bool {
+		if forkRunnerBad(label, owned) || (!owned && site.spelled && label != "" && !forkHostedLabel.MatchString(label)) {
+			bad = label
+			return true
+		}
+		return false
+	})
 	if err != nil {
 		site.leak = "cannot be evaluated (" + err.Error() + "); extend this test or ask the architect"
 		return site
 	}
 	site.evaluated = true
 	if found != "" {
-		site.leak = "resolves to " + found + forkRunnerWhyBad(owned)
+		site.leak = "resolves to " + found + forkRunnerWhyBad(bad, owned)
 	} else {
 		// Not a label of any kind is no Blacksmith label, so the pass above lets
 		// it by; it is still a job that cannot be scheduled.
@@ -820,9 +835,14 @@ func forkRunnerResolve(node *yaml.Node, m forkRunnerMatrix, owned bool) forkRunn
 	return site
 }
 
-func forkRunnerWhyBad(owned bool) string {
-	if owned {
+// forkRunnerWhyBad ends the sentence that reports label, which forkRunnerResolve
+// refused, with the reason it was refused.
+func forkRunnerWhyBad(label string, owned bool) string {
+	switch {
+	case owned:
 		return ", which is not a GitHub-hosted runner (ubuntu-*, windows-*, macos-*): a fork-owned workflow runs on those only"
+	case !forkBlacksmithAny.MatchString(label):
+		return ", which is not a GitHub-hosted runner (ubuntu-*, windows-*, macos-*): a site that spells a Blacksmith label must fall back to one of those in a fork"
 	}
 	return ", a Blacksmith label"
 }
