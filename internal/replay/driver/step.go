@@ -27,9 +27,13 @@ type stepEnv interface {
 	Execute(ctx context.Context, action translate.Action) error
 	// WorkHead is the work clone's current head commit.
 	WorkHead(ctx context.Context) (string, error)
-	// CandidateView is the work clone's view of an issue as of ref, read the same
-	// way as the oracle's, so the two sides are typed identically.
-	CandidateView(ctx context.Context, ref, issue string) (*oracle.View, error)
+	// WorkDataDir is the work clone's database, the directory its readers look in.
+	WorkDataDir() string
+	// Readers are the ways the work clone is read for every issue a step compares,
+	// each held to the oracle on an axis of its own. The row reader reads the
+	// issue's rows the way the oracle's are read, so the two sides are typed
+	// identically; the versioned reader reads what the product stored.
+	Readers() []CandidateReader
 }
 
 // quarantined maps an issue to the commit of the step that quarantined it. An
@@ -56,9 +60,12 @@ func (q quarantined) note(res CommitReplayResult) {
 type issueOutcome struct {
 	// Result is the row for the (step, issue); RunID is left for the loop to set.
 	Result CommitReplayResult
-	// Mismatch is the comparison's stored context, set for a mismatch and for an
+	// Mismatch is the row axis's stored context, set for a mismatch and for an
 	// uncomparable pair.
 	Mismatch *compare.Mismatch
+	// VersionMismatch is the version axis's, set the same way. It is a row of its own
+	// in the run's mismatches, so a triager reads each axis's finding apart.
+	VersionMismatch *compare.Mismatch
 	// WriteLatency is the time spent running the issue's actions.
 	WriteLatency time.Duration
 }
@@ -108,18 +115,29 @@ func mutationKind(st Step, actions []translate.Action) string {
 // fixes: the plan is read, then the oracle's view of every issue that will be
 // compared, and only then is anything written to the work clone, so a read of
 // the oracle can be neither affected by nor blamed on the replay. The work
-// clone's views are read last, the same way.
+// clone is read last, the same way, once per reader and issue.
 //
 // A step is atomic per issue. An issue the translator could not express is
 // untranslatable and runs nothing; an issue bd refused an action for is
 // rejected, and none of its later actions in the step run; either way it joins q.
 // Neither stops the step, nor the run. A failure of the harness itself, such as
 // bd not starting, does, and leaves q as it was.
+//
+// An issue is held to the oracle on two axes: the rows the work clone holds, and the
+// version the store minted for the change. Its verdict is the worse of the two, so a
+// step whose rows agree can still be a mismatch; a version that was not compared (a
+// legacy record, a read that did not run) leaves the verdict to the rows and is
+// counted on the axis, where it cannot be taken for a pass.
 func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*stepOutcome, error) {
 	plan, err := env.Plan(ctx, st.From.Hash, st.To.Hash)
 	if err != nil {
 		return nil, fmt.Errorf("plan: %w", err)
 	}
+	readers := env.Readers()
+	if err := checkReaders(readers); err != nil {
+		return nil, err
+	}
+	_, versioned := readerNamed(readers, readerVersioned)
 
 	actionsBy := map[string][]translate.Action{}
 	touched := map[string]bool{}
@@ -216,29 +234,31 @@ func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*step
 			return nil, fmt.Errorf("read the work clone's head: %w", err)
 		}
 		for _, id := range compared {
-			cand, err := env.CandidateView(ctx, head, id)
+			states, err := readCandidate(ctx, readers, env.WorkDataDir(), id, head)
 			if err != nil {
-				return nil, fmt.Errorf("read the work clone's %s at %s: %w", id, head, err)
+				return nil, err
 			}
-			res, skew, err := compare.CompareViews(oracleViews[id], cand)
+			res, skew, err := compare.CompareViews(oracleViews[id], states[readerRow].View)
 			if err != nil {
 				return nil, fmt.Errorf("compare %s at %s: %w", id, st.To.Hash, err)
 			}
 			mergeSkew(out.Skew, skew)
 			oc := outcomes[id]
-			oc.Result.Matched = res.Matched
 			oc.Result.OracleHash = res.OracleHash
 			oc.Result.CandidateHash = res.CandidateHash
-			switch {
-			case res.Matched:
-				oc.Result.Verdict = VerdictMatched
-			case res.Uncomparable():
-				oc.Result.Verdict = VerdictUncomparable
-				oc.Mismatch = res.Mismatch
-			default:
-				oc.Result.Verdict = VerdictMismatch
-				oc.Mismatch = res.Mismatch
+			oc.Mismatch = res.Mismatch
+			row := rowAxis(res)
+			oc.Result.Verdict = row.verdict()
+			if versioned {
+				axis, mismatch, err := versionAxis(oracleViews[id], states[readerVersioned])
+				if err != nil {
+					return nil, fmt.Errorf("hold the work clone's %s at %s to the version the store minted: %w", id, head, err)
+				}
+				oc.Result.RowVerdict, oc.Result.VersionVerdict = row, axis
+				oc.VersionMismatch = mismatch
+				oc.Result.Verdict = worse(oc.Result.Verdict, axis.verdict())
 			}
+			oc.Result.Matched = oc.Result.Verdict == VerdictMatched
 		}
 	}
 

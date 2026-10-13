@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/steveyegge/beads/internal/replay/compare"
+	"github.com/steveyegge/beads/internal/replay/versions"
 )
 
 // runner holds the state of one run's step loop: where its rows go, who hears
@@ -25,6 +26,13 @@ type runner struct {
 	skew           compare.Skew
 	numberFidelity int
 
+	// rowReads and versionReads count the result rows by what each axis found, keyed
+	// by the axis value. writeFence is whether the work clone's schema has the write
+	// fence, which a run learns once versioned history is on.
+	rowReads     map[string]int
+	versionReads map[string]int
+	writeFence   bool
+
 	// baseline and enableRefused are what a seeded run found before its first step:
 	// how the work clone compared with the oracle at the base, and whether the
 	// product refused to turn versioned history on. Both stay nil on a run that did
@@ -44,6 +52,9 @@ func newRunner(runID string, store *Store, observer Observer) *runner {
 		gapColumns: map[string]int{},
 		derived:    map[string]int{},
 		skew:       compare.Skew{},
+
+		rowReads:     map[string]int{},
+		versionReads: map[string]int{},
 	}
 }
 
@@ -117,10 +128,16 @@ func (r *runner) record(ctx context.Context, st Step, out *stepOutcome) error {
 		if err := r.store.WriteCommitReplayResult(res); err != nil {
 			return fmt.Errorf("write result for %s: %w", res.IssueID, err)
 		}
-		if m := oc.Mismatch; m != nil {
+		// Each axis's finding is a row of its own, the row axis's first. The version
+		// axis's is told apart by its category and, for a version-state finding, by the
+		// section of the issue it differs in.
+		for _, m := range []*compare.Mismatch{oc.Mismatch, oc.VersionMismatch} {
+			if m == nil {
+				continue
+			}
 			row := Mismatch{
 				RunID: r.runID, Step: st.Index, SourceCommit: res.SourceCommit, IssueID: res.IssueID,
-				Category: m.Category, ExpectedJSON: m.ExpectedJSON, ActualJSON: m.ActualJSON,
+				Category: m.Category, Section: m.Section, ExpectedJSON: m.ExpectedJSON, ActualJSON: m.ActualJSON,
 			}
 			if err := r.store.WriteMismatch(row); err != nil {
 				return fmt.Errorf("write mismatch for %s: %w", res.IssueID, err)
@@ -147,12 +164,21 @@ func (r *runner) foldGap(row CoverageGapRow) {
 	r.gapTables[row.Table]++
 }
 
-// foldResult counts a result row into the run's totals: its verdict, the number it
-// could not compare exactly, and the columns an untranslatable issue has no bd
-// form for.
+// foldResult counts a result row into the run's totals: its verdict, what each axis
+// found, the number it could not compare exactly on either axis, and the columns an
+// untranslatable issue has no bd form for.
 func (r *runner) foldResult(res CommitReplayResult) {
 	r.verdicts[res.Verdict]++
-	if res.Verdict == VerdictUncomparable {
+	if res.RowVerdict != "" {
+		r.rowReads[string(res.RowVerdict)]++
+	}
+	if res.VersionVerdict != "" {
+		r.versionReads[string(res.VersionVerdict)]++
+	}
+	// A step that is a mismatch on one axis can hold a number the other could not
+	// compare, and that number is as much a hole in the run as one on a step that is
+	// uncomparable.
+	if res.Verdict == VerdictUncomparable || res.RowVerdict == AxisUncomparable || res.VersionVerdict == AxisUncomparable {
 		r.numberFidelity++
 	}
 	if d := res.Detail; d != nil && res.Verdict == VerdictUntranslatable {
@@ -195,6 +221,41 @@ type Summary struct {
 	// EnableRefused is set when the product would not turn versioned history on over
 	// the seeded rows, and the run went on without it; absent otherwise.
 	EnableRefused *EnableRefusal `json:"enable_refused,omitempty"`
+	// VersionedReads counts the rows by what the row axis and the version axis found.
+	// A run writes it whether or not it read any version, so that a run that read
+	// none says so with zeros.
+	VersionedReads *VersionedReads `json:"versioned_reads,omitempty"`
+	// DurableStateLossy is the version axis's documented fidelity boundary, reported
+	// once per run and never per row: what it cannot tell apart is not a finding.
+	DurableStateLossy *DurableStateLossy `json:"durable_state_lossy,omitempty"`
+	// DurableStateExcludes is what the version axis does not check, and why. Each is a
+	// standing fact about the store or the harness, so it is listed once.
+	DurableStateExcludes []versions.Exclude `json:"durable_state_excludes,omitempty"`
+}
+
+// VersionedReads counts the (step, issue) rows by what each axis found. Every value
+// an axis can take is listed, the ones that did not occur with a zero, so a value
+// that is absent can be told from one that was never counted.
+type VersionedReads struct {
+	// WriteFence is whether the work clone's schema has the write fence. A store with
+	// it mints no version for a change to a legacy record, so such an issue is
+	// version-legacy; a store without it mints a first version for the change.
+	WriteFence bool `json:"write_fence"`
+	// Row counts the rows by what the row axis found: matched, mismatch or
+	// uncomparable.
+	Row map[string]int `json:"row"`
+	// Version counts them by what the version axis found: the values the row axis
+	// has, and version-legacy and version-not-run with its reason. The last two are
+	// neither a pass nor a mismatch.
+	Version map[string]int `json:"version"`
+}
+
+// DurableStateLossy is the fidelity boundary of the version axis: the fields whose
+// zero value the stored document cannot tell from NULL, and the basis for reading
+// the two as the same.
+type DurableStateLossy struct {
+	Basis  string                `json:"basis"`
+	Fields []versions.LossyField `json:"fields"`
 }
 
 // CoveredRange is the part of the oracle's history a run replayed. History
@@ -249,7 +310,27 @@ func (r *runner) summarize(run ReplayRun, w *Walk, steps []Step, seed *SeedRecor
 		Seed:           seed,
 		Baseline:       r.baseline,
 		EnableRefused:  r.enableRefused,
+		VersionedReads: &VersionedReads{
+			WriteFence: r.writeFence,
+			Row:        axisCounts(r.rowReads, rowAxisValues),
+			Version:    axisCounts(r.versionReads, versionAxisValues),
+		},
+		DurableStateLossy:    &DurableStateLossy{Basis: versions.LossyBasis, Fields: versions.Lossy()},
+		DurableStateExcludes: versions.Excludes(),
 	}
+}
+
+// axisCounts lists every value an axis can take with its count, zero where it did
+// not occur. A value that is not one of them is a row the run should not have
+// written, and it is listed too, so the counts still add up to the rows.
+func axisCounts(counted map[string]int, values []AxisVerdict) map[string]int {
+	out := copyCounts(counted)
+	for _, v := range values {
+		if _, ok := out[string(v)]; !ok {
+			out[string(v)] = 0
+		}
+	}
+	return out
 }
 
 func copyCounts(m map[string]int) map[string]int {
