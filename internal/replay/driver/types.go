@@ -59,18 +59,26 @@ var verdicts = []Verdict{
 // not. SourceCommit is the commit the step ends at, FromCommit the one it starts
 // from, and Step is the step's position in the run, from 0: the journal names a
 // step the same way, which is how a resume tells whose rows are whose.
+//
+// A compared issue is held to the oracle on two axes, and Verdict is the worse of
+// them: RowVerdict for the rows the work clone holds, VersionVerdict for the version
+// the store minted. They are set when the run reads both, and empty for an issue
+// nothing was compared for, and for a run that reads the rows alone. OracleHash and
+// CandidateHash are the row axis's.
 type CommitReplayResult struct {
-	RunID         string        `json:"run_id"`
-	Step          int           `json:"step"`
-	FromCommit    string        `json:"from_commit"`
-	SourceCommit  string        `json:"source_commit"`
-	IssueID       string        `json:"issue_id"`
-	MutationKind  string        `json:"mutation_kind"`
-	Verdict       Verdict       `json:"verdict"`
-	Matched       bool          `json:"matched"`
-	OracleHash    string        `json:"oracle_hash"`
-	CandidateHash string        `json:"candidate_hash"`
-	Detail        *ResultDetail `json:"detail,omitempty"`
+	RunID          string        `json:"run_id"`
+	Step           int           `json:"step"`
+	FromCommit     string        `json:"from_commit"`
+	SourceCommit   string        `json:"source_commit"`
+	IssueID        string        `json:"issue_id"`
+	MutationKind   string        `json:"mutation_kind"`
+	Verdict        Verdict       `json:"verdict"`
+	Matched        bool          `json:"matched"`
+	RowVerdict     AxisVerdict   `json:"row_verdict,omitempty"`
+	VersionVerdict AxisVerdict   `json:"version_verdict,omitempty"`
+	OracleHash     string        `json:"oracle_hash"`
+	CandidateHash  string        `json:"candidate_hash"`
+	Detail         *ResultDetail `json:"detail,omitempty"`
 }
 
 // ResultDetail says more about a result than its verdict does, for the verdicts
@@ -104,13 +112,16 @@ type CoverageGapRow struct {
 }
 
 // Mismatch is the ERD's MISMATCH entity: full repro context for a
-// non-matching comparison.
+// non-matching comparison. A step that differs on both axes has one for each, told
+// apart by Category: the version axis's is version-state, and Section says where in
+// the issue its document differs.
 type Mismatch struct {
 	RunID        string          `json:"run_id"`
 	Step         int             `json:"step"`
 	SourceCommit string          `json:"source_commit"`
 	IssueID      string          `json:"issue_id"`
 	Category     string          `json:"category"`
+	Section      string          `json:"section,omitempty"`
 	ExpectedJSON json.RawMessage `json:"expected_json"`
 	ActualJSON   json.RawMessage `json:"actual_json"`
 }

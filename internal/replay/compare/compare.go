@@ -76,6 +76,9 @@ type Mismatch struct {
 	Category     string          `json:"category"`
 	ExpectedJSON json.RawMessage `json:"expected_json"`
 	ActualJSON   json.RawMessage `json:"actual_json"`
+	// Section says where in the issue a version-state mismatch differs; the other
+	// categories have none.
+	Section string `json:"section,omitempty"`
 }
 
 // Canonicalize transforms a JSON payload per RFC 8785 (JCS): object keys
