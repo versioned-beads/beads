@@ -288,7 +288,20 @@ func (e realEnv) OracleView(ctx context.Context, ref, issue string) (*oracle.Vie
 // seeding's refusal and not the step's: it is a *SeedRefused, which ends the run,
 // where any other refusal is a rejected write.
 func (e realEnv) Execute(ctx context.Context, action translate.Action) error {
-	err := translate.ExecuteWith(ctx, e.cfg.Tools.IntegrationBin, e.cfg.WorkDir, action)
+	return e.refusal(translate.ExecuteWith(ctx, e.cfg.Tools.IntegrationBin, e.cfg.WorkDir, action))
+}
+
+// ExecuteAs runs one action as actor with the commit mode pinned, so that it is one
+// Dolt commit, and reports the heads and the interval it ran in. A refusal is told
+// apart as Execute tells it.
+func (e realEnv) ExecuteAs(ctx context.Context, action translate.Action, actor string) (translate.ActionResult, error) {
+	res, err := translate.Execute(ctx, e.cfg.Tools.IntegrationBin, e.cfg.WorkDir, e.cfg.WorkDataDir, action, actor)
+	return res, e.refusal(err)
+}
+
+// refusal turns a bd's refusal of a seeded clone into the seeding's, which ends the run,
+// and leaves every other error as it was.
+func (e realEnv) refusal(err error) error {
 	var exit *translate.ExecError
 	if e.cfg.Seed != nil && errors.As(err, &exit) {
 		if refused := seedRefusalOf(exit); refused != nil {
@@ -297,6 +310,15 @@ func (e realEnv) Execute(ctx context.Context, action translate.Action) error {
 	}
 	return err
 }
+
+// Delta is what the commits after from, up to and including to, did to the work clone.
+func (e realEnv) Delta(ctx context.Context, from, to string) (versions.Delta, error) {
+	return versions.Ledger{}.Delta(ctx, e.cfg.WorkDataDir, from, to)
+}
+
+// Accounts reports whether the run has versions to account for: a product that would
+// not turn versioned history on mints none.
+func (e realEnv) Accounts() bool { return e.versionedNotRun == "" }
 
 func (e realEnv) WorkHead(ctx context.Context) (string, error) {
 	return headCommitOf(ctx, e.cfg.WorkDataDir)

@@ -4,6 +4,7 @@ go_library(
     name = "translate",
     srcs = [
         "exec.go",
+        "execute.go",
         "kind.go",
         "plan.go",
         "policy.go",
@@ -20,6 +21,7 @@ go_library(
 go_test(
     name = "translate_test",
     srcs = [
+        "b11b_execute_test.go",
         "exec_test.go",
         "kind_test.go",
         "plan_test.go",

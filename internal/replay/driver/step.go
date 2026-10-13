@@ -66,6 +66,10 @@ type issueOutcome struct {
 	// VersionMismatch is the version axis's, set the same way. It is a row of its own
 	// in the run's mismatches, so a triager reads each axis's finding apart.
 	VersionMismatch *compare.Mismatch
+	// Accounted are the findings of the version accounting that are filed under this
+	// row, each a row of the run's mismatches of its own. A finding is about an issue,
+	// which is this one or, by cascade, another.
+	Accounted []accountedFinding
 	// WriteLatency is the time spent running the issue's actions.
 	WriteLatency time.Duration
 }
@@ -128,6 +132,10 @@ func mutationKind(st Step, actions []translate.Action) string {
 // step whose rows agree can still be a mismatch; a version that was not compared (a
 // legacy record, a read that did not run) leaves the verdict to the rows and is
 // counted on the axis, where it cannot be taken for a pass.
+//
+// An environment that accounts for its commands also holds each command to the rules of
+// the versions it mints, between the heads around it, and the findings go into the
+// rows once the step has been read.
 func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*stepOutcome, error) {
 	plan, err := env.Plan(ctx, st.From.Hash, st.To.Hash)
 	if err != nil {
@@ -138,6 +146,11 @@ func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*step
 		return nil, err
 	}
 	_, versioned := readerNamed(readers, readerVersioned)
+	acct, _ := env.(accountedEnv)
+	var account *stepAccount
+	if acct != nil && acct.Accounts() {
+		account = newStepAccount(env, acct, readers)
+	}
 
 	actionsBy := map[string][]translate.Action{}
 	touched := map[string]bool{}
@@ -202,9 +215,14 @@ func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*step
 			continue
 		}
 		start := time.Now()
-		err := env.Execute(ctx, a)
-		outcomes[a.Issue].WriteLatency += time.Since(start)
+		res, err := execute(ctx, env, acct, a, oracleViews[a.Issue])
+		outcomes[a.Issue].WriteLatency += latencyOf(res, time.Since(start))
 		if err == nil {
+			if account != nil {
+				if err := account.after(ctx, res); err != nil {
+					return nil, err
+				}
+			}
 			continue
 		}
 		// A bd that was interrupted along with the run exits non-zero too, and that is
@@ -220,6 +238,7 @@ func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*step
 	}
 
 	var compared []string
+	comparedSet := map[string]bool{}
 	for _, id := range runnable {
 		if d := rejected[id]; d != nil {
 			outcomes[id].Result.Verdict = VerdictRejected
@@ -227,6 +246,7 @@ func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*step
 			continue
 		}
 		compared = append(compared, id)
+		comparedSet[id] = true
 	}
 	if len(compared) > 0 {
 		head, err := env.WorkHead(ctx)
@@ -260,6 +280,9 @@ func replayStep(ctx context.Context, env stepEnv, q quarantined, st Step) (*step
 			}
 			oc.Result.Matched = oc.Result.Verdict == VerdictMatched
 		}
+	}
+	if account != nil {
+		account.apply(ids, outcomes, comparedSet)
 	}
 
 	for _, id := range ids {

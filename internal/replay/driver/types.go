@@ -65,20 +65,50 @@ var verdicts = []Verdict{
 // the store minted. They are set when the run reads both, and empty for an issue
 // nothing was compared for, and for a run that reads the rows alone. OracleHash and
 // CandidateHash are the row axis's.
+//
+// A run that accounts for the versions its commands mint also keeps, in Accounting,
+// what it made of the commands it ran for the issue. A finding of that accounting
+// about an issue the step did not read is carried by the row of the issue whose
+// command it was found after, and makes that row a mismatch.
 type CommitReplayResult struct {
-	RunID          string        `json:"run_id"`
-	Step           int           `json:"step"`
-	FromCommit     string        `json:"from_commit"`
-	SourceCommit   string        `json:"source_commit"`
-	IssueID        string        `json:"issue_id"`
-	MutationKind   string        `json:"mutation_kind"`
-	Verdict        Verdict       `json:"verdict"`
-	Matched        bool          `json:"matched"`
-	RowVerdict     AxisVerdict   `json:"row_verdict,omitempty"`
-	VersionVerdict AxisVerdict   `json:"version_verdict,omitempty"`
-	OracleHash     string        `json:"oracle_hash"`
-	CandidateHash  string        `json:"candidate_hash"`
-	Detail         *ResultDetail `json:"detail,omitempty"`
+	RunID          string             `json:"run_id"`
+	Step           int                `json:"step"`
+	FromCommit     string             `json:"from_commit"`
+	SourceCommit   string             `json:"source_commit"`
+	IssueID        string             `json:"issue_id"`
+	MutationKind   string             `json:"mutation_kind"`
+	Verdict        Verdict            `json:"verdict"`
+	Matched        bool               `json:"matched"`
+	RowVerdict     AxisVerdict        `json:"row_verdict,omitempty"`
+	VersionVerdict AxisVerdict        `json:"version_verdict,omitempty"`
+	OracleHash     string             `json:"oracle_hash"`
+	CandidateHash  string             `json:"candidate_hash"`
+	Detail         *ResultDetail      `json:"detail,omitempty"`
+	Accounting     *VersionAccounting `json:"version_accounting,omitempty"`
+}
+
+// VersionAccounting is what the version accounting made of the commands the replay ran
+// for one (step, issue) row. It is kept in the row, and the summary's totals are folded
+// from the rows, so that a run carried on from its journal totals what a run that was
+// never stopped totals.
+type VersionAccounting struct {
+	// LegacyChanges and ParticipatingChanges count the real changes the commands made,
+	// to the issue or, by cascade, to others: one for each command and issue with a
+	// change, by whether the issue was a legacy record before the command or took part
+	// in history. A command that changed nothing for an issue counts nothing for it.
+	LegacyChanges        int `json:"legacy_changes,omitempty"`
+	ParticipatingChanges int `json:"participating_changes,omitempty"`
+	// Findings counts what was found wrong with the versions, by category. version-gap
+	// is counted here and is not a mismatch: it is a real change the product is known
+	// to mint nothing for.
+	Findings map[string]int `json:"findings,omitempty"`
+	// RemovedMarked is set when a command put a removal mark on a row of issue_versions.
+	RemovedMarked bool `json:"removed_marked,omitempty"`
+}
+
+// empty reports an accounting with nothing in it, which a row leaves out.
+func (a VersionAccounting) empty() bool {
+	return a.LegacyChanges == 0 && a.ParticipatingChanges == 0 && len(a.Findings) == 0 && !a.RemovedMarked
 }
 
 // ResultDetail says more about a result than its verdict does, for the verdicts
@@ -114,7 +144,9 @@ type CoverageGapRow struct {
 // Mismatch is the ERD's MISMATCH entity: full repro context for a
 // non-matching comparison. A step that differs on both axes has one for each, told
 // apart by Category: the version axis's is version-state, and Section says where in
-// the issue its document differs.
+// the issue its document differs. A finding of the version accounting is a row of its
+// own: Category is the rule that was broken, Section the way it was broken, and
+// IssueID the issue the finding is about, which a step does not always read.
 type Mismatch struct {
 	RunID        string          `json:"run_id"`
 	Step         int             `json:"step"`
