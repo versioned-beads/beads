@@ -315,8 +315,11 @@ jobs:
           fi
           echo "Replay census packages:"
           echo "$packages"
-          # The flags of the go_test line in scripts/ci/pr-core.sh.
-          go test -p 4 -parallel 4 -race -short -timeout=30m -skip '^TestEmbedded' $packages
+          # The flags of the go_test line in scripts/ci/pr-core.sh, plus the
+          # literal gms_pure_go tag that the workflow-tags check
+          # (//scripts/repochecks:workflow_tags_test) requires of a direct go
+          # command; .buildflags exports the same tag through GOFLAGS.
+          go test -tags gms_pure_go -p 4 -parallel 4 -race -short -timeout=30m -skip '^TestEmbedded' $packages
 
   # Fails unless every job above succeeded. None of them is conditional, so a
   # skipped result means a need failed or the run was cut short, and that fails
