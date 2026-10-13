@@ -6236,7 +6236,13 @@ func TestDoltImagePullWorkflowsUseRetryHelper(t *testing.T) {
 	// sql-servers (bazel.yml's dolt-server lanes) and needs no docker, since
 	// pr-risk.yml's container-backed legacy tiers were retired
 	// (ga-96smfk.22). The helper stays for local container-backed runs.
-	wantCalls := map[string]int{}
+	wantCalls := map[string]int{
+		// This repository's fork-heavy-tiers.yml keeps the three container-backed
+		// jobs it lifted from pr-risk.yml (test-proxied-cmd, test-server-storage,
+		// test-server-storage-full), each with its one helper call (be-bg8llq).
+		// Delete this entry with the workflow.
+		"fork-heavy-tiers.yml": 3,
+	}
 
 	workflowsDir := filepath.Join(sourceRepoRoot(t), ".github", "workflows")
 	workflowPaths, err := filepath.Glob(filepath.Join(workflowsDir, "*.y*ml"))
