@@ -1,0 +1,53 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "versions",
+    srcs = [
+        "drift.go",
+        "project.go",
+        "read.go",
+    ],
+    importpath = "github.com/steveyegge/beads/internal/replay/versions",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/replay/doltcli",
+        "//internal/replay/oracle",
+        "//internal/storage/issueops",
+        "//internal/types",
+    ],
+)
+
+go_test(
+    name = "versions_test",
+    srcs = [
+        "drift_test.go",
+        "fixture_test.go",
+        "main_test.go",
+        "nullempty_test.go",
+        "projection_test.go",
+        "read_test.go",
+    ],
+    embed = [":versions"],
+    deps = [
+        "//internal/replay/compare",
+        "//internal/replay/doltcli",
+        "//internal/replay/oracle",
+        "//internal/replay/replaytest",
+        "//internal/replay/translate",
+        "//internal/storage/issueops",
+        "//internal/types",
+    ],
+)
+
+# --- begin go_srcs (managed by tools/bazel/go_srcs.py; run `make bazel-sync`) ---
+
+filegroup(
+    name = "go_srcs",
+    srcs = glob(
+        ["**/*.go"],
+        allow_empty = True,
+    ),
+    visibility = ["//:__subpackages__"],
+)
+
+# --- end go_srcs ---

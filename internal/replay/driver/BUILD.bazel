@@ -14,6 +14,7 @@ go_library(
         "run.go",
         "runner.go",
         "runrecord.go",
+        "seam.go",
         "seed.go",
         "seed_findings.go",
         "seed_flow.go",
@@ -30,12 +31,19 @@ go_library(
         "//internal/replay/doltcli",
         "//internal/replay/oracle",
         "//internal/replay/translate",
+        "//internal/replay/versions",
+        "//internal/storage/issueops",
+        "//internal/types",
     ],
 )
 
 go_test(
     name = "driver_test",
     srcs = [
+        "b11a_fixture_test.go",
+        "b11a_run_test.go",
+        "b11a_seam_test.go",
+        "b11a_summary_test.go",
         "b6_fixture_test.go",
         "b6_run_test.go",
         "b7_fixture_test.go",
@@ -66,8 +74,10 @@ go_test(
         "//internal/replay/oracle",
         "//internal/replay/replaytest",
         "//internal/replay/translate",
+        "//internal/replay/versions",
         "//internal/storage/schema",
         "//internal/testutil/bazeltest",
+        "//internal/types",
     ],
 )
 

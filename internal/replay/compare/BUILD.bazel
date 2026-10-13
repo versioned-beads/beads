@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "columns.go",
         "compare.go",
+        "durable.go",
         "view.go",
     ],
     importpath = "github.com/steveyegge/beads/internal/replay/compare",
@@ -12,6 +13,7 @@ go_library(
     deps = [
         "//internal/replay/oracle",
         "//internal/storage/issueops",
+        "//internal/types",
         "@com_github_gowebpki_jcs//:jcs",
     ],
 )
@@ -21,6 +23,7 @@ go_test(
     srcs = [
         "compare_test.go",
         "drift_test.go",
+        "durable_test.go",
         "fidelity_test.go",
     ],
     data = glob(["testdata/**"]),
@@ -30,6 +33,7 @@ go_test(
         "//internal/replay/oracle",
         "//internal/replay/replaytest",
         "//internal/storage/issueops",
+        "//internal/types",
     ],
 )
 
