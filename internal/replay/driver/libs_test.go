@@ -51,10 +51,11 @@ func TestB1DriverUsesLibs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("OracleView: %v", err)
 			}
-			candidateView, err := env.CandidateView(ctx, tc.head, "x-1")
+			state, err := b11aReaderNamed(t, env.Readers(), "row").Read(ctx, tc.dir, "x-1", tc.head)
 			if err != nil {
-				t.Fatalf("CandidateView: %v", err)
+				t.Fatalf("the row reader: %v", err)
 			}
+			candidateView := state.View
 			var _ *oracle.View = oracleView // the driver hands back the library's type
 
 			direct, err := oracle.ReadView(ctx, oracleDir, oracleHead, "x-1")
