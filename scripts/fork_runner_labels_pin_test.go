@@ -45,7 +45,10 @@ import (
 //     repository and actor, and every rbe mode this repository can reach: none
 //     because rbe was skipped, skip, cache, local, fork-ro, fork-rw) no runs-on
 //     may resolve to a Blacksmith label, and no matrix cell may spell one
-//     unless runs-on reads it and the evaluation above clears it.
+//     unless runs-on reads it and the evaluation above clears it. A runs-on that
+//     spells one resolves there to a GitHub-hosted label (ubuntu-*, windows-*,
+//     macos-*) and to nothing else: whatever it falls back to is a runner
+//     somebody serves.
 //   - In gastownhall's world (the same, plus rbe mode remote) a runs-on that
 //     spells a Blacksmith label must still resolve to one: a guard must not
 //     disable upstream's own pool (a typo in the owner, an inverted operator, a
@@ -76,7 +79,8 @@ var (
 	// forkBlacksmithAny: a runner label, resolved, that names Blacksmith at all.
 	forkBlacksmithAny = regexp.MustCompile(`(?i)blacksmith`)
 	// forkHostedLabel: a GitHub-hosted runner, which is all a fork-owned
-	// workflow may resolve to.
+	// workflow may resolve to, and all a runs-on that spells a Blacksmith label
+	// may fall back to in the fork's world.
 	forkHostedLabel = regexp.MustCompile(`^(ubuntu|windows|macos)-`)
 )
 
@@ -726,7 +730,7 @@ func forkRunnerResolve(node *yaml.Node, m forkRunnerMatrix, owned bool) forkRunn
 	if !strings.Contains(text, "${{") {
 		site.evaluated, site.reached = true, site.spelled
 		if forkRunnerBad(text, owned) {
-			site.leak = "is the literal label " + strconv.Quote(text) + forkRunnerWhyBad(owned)
+			site.leak = "is the literal label " + strconv.Quote(text) + forkRunnerWhyBad(text, owned)
 		}
 		return site
 	}
@@ -776,14 +780,25 @@ func forkRunnerResolve(node *yaml.Node, m forkRunnerMatrix, owned bool) forkRunn
 			}
 		}
 	}
-	found, err := forkRunnerFirst(forkRunnerForkWorld, text, keys, m, func(label string) bool { return forkRunnerBad(label, owned) })
+	// forkRunnerBad refuses a Blacksmith label and nothing else outside a
+	// fork-owned workflow, so a site that spells one could fall back to "macos" or
+	// "self-hosted" and pass: what it falls back to must be a label GitHub hosts.
+	// The empty label is forkRunnerUnset's, below.
+	var bad string
+	found, err := forkRunnerFirst(forkRunnerForkWorld, text, keys, m, func(label string) bool {
+		if forkRunnerBad(label, owned) || (!owned && site.spelled && label != "" && !forkHostedLabel.MatchString(label)) {
+			bad = label
+			return true
+		}
+		return false
+	})
 	if err != nil {
 		site.leak = "cannot be evaluated (" + err.Error() + "); extend this test or ask the architect"
 		return site
 	}
 	site.evaluated = true
 	if found != "" {
-		site.leak = "resolves to " + found + forkRunnerWhyBad(owned)
+		site.leak = "resolves to " + found + forkRunnerWhyBad(bad, owned)
 	} else {
 		// Not a label of any kind is no Blacksmith label, so the pass above lets
 		// it by; it is still a job that cannot be scheduled.
@@ -820,9 +835,14 @@ func forkRunnerResolve(node *yaml.Node, m forkRunnerMatrix, owned bool) forkRunn
 	return site
 }
 
-func forkRunnerWhyBad(owned bool) string {
-	if owned {
+// forkRunnerWhyBad ends the sentence that reports label, which forkRunnerResolve
+// refused, with the reason it was refused.
+func forkRunnerWhyBad(label string, owned bool) string {
+	switch {
+	case owned:
 		return ", which is not a GitHub-hosted runner (ubuntu-*, windows-*, macos-*): a fork-owned workflow runs on those only"
+	case !forkBlacksmithAny.MatchString(label):
+		return ", which is not a GitHub-hosted runner (ubuntu-*, windows-*, macos-*): a site that spells a Blacksmith label must fall back to one of those in a fork"
 	}
 	return ", a Blacksmith label"
 }
@@ -1112,6 +1132,15 @@ func TestForkRunnerLabelScanControls(t *testing.T) {
 	linuxEntry := "          - os: linux\n            runner: " + bs2 + "\n            fallback: ubuntu-latest\n"
 	macEntry := "          - os: mac\n            runner: " + bsMac + "\n            fallback: macos-latest\n"
 	macEntryBare := "          - os: mac\n            runner: " + bsMac + "\n"
+	// The os form of pr.yml's platform legs (A2, be-bba0r8): two include entries,
+	// each an os (the hosted fallback) beside a runner (the Blacksmith label),
+	// behind a runs-on that picks one of the two. osMissing is that form with one
+	// entry that sets no os.
+	osForm := func(a, b, runsOn string) string {
+		return matrix + "          - os: " + a + "\n            runner: " + bsWin + "\n          - os: " + b + "\n            runner: " + bsMac + "\n    runs-on: " + runsOn + "\n"
+	}
+	osGuarded := "${{ " + forkBlacksmithGuard + "matrix.runner || matrix.os }}"
+	osMissing := matrix + "          - os: windows-latest\n            runner: " + bsWin + "\n          - runner: " + bsMac + "\n    runs-on: " + osGuarded + "\n"
 
 	type scanCase struct {
 		name  string
@@ -1160,6 +1189,16 @@ func TestForkRunnerLabelScanControls(t *testing.T) {
 		{name: "runs-on reads a context the scan does not supply", src: forkWorkflowDoc(pr, "    runs-on: ${{ vars.USE_BLACKSMITH == 'true' && '"+bs2+"' || 'ubuntu-latest' }}\n"), leaks: 1},
 		{name: "fork-owned workflow that names Blacksmith in a comment", file: "fork-x.yml", src: forkWorkflowDoc(pr, "    # upstream runs this job on blacksmith-2vcpu\n    runs-on: ubuntu-latest\n"), leaks: 1},
 		{name: "fork-owned workflow on a runner that is not GitHub-hosted", file: "fork-x.yml", src: forkWorkflowDoc(pr, "    runs-on: self-hosted\n"), leaks: 1},
+		// The os form, and the fallback it ends in: what the fork resolves to when
+		// the guard is false must be a label GitHub hosts, in whichever workflow.
+		{name: "os form without the guard", src: forkWorkflowDoc(pr, osForm("windows-latest", "macos-latest", "${{ matrix.runner || matrix.os }}")), leaks: 1},
+		{name: "os form where an os value is a Blacksmith label", src: forkWorkflowDoc(pr, osForm(bsWin, "macos-latest", osGuarded)), leaks: 1},
+		{name: "os form where one entry sets no os", src: forkWorkflowDoc(pr, osMissing), leaks: 1},
+		// os is unset in one combination the cross product reads, so gastownhall's
+		// world still reaches both labels: a leak here, and not a dead site.
+		{name: "os form with the operands swapped", src: forkWorkflowDoc(pr, osForm("windows-latest", "macos-latest", "${{ "+forkBlacksmithGuard+"matrix.os || matrix.runner }}")), leaks: 1},
+		{name: "os form where an os value is macos, with no dash", src: forkWorkflowDoc(pr, osForm("windows-latest", "macos", osGuarded)), leaks: 1},
+		{name: "guarded literal whose fallback is a self-hosted runner", src: forkWorkflowDoc(pr, "    runs-on: "+cellGuard(bs2, "self-hosted")+"\n"), leaks: 1},
 		{name: "workflow that does not parse", src: "on: [\njobs: {\n", leaks: 1},
 
 		// Guards done right: no leak, and upstream's pool still reached.
@@ -1177,6 +1216,13 @@ func TestForkRunnerLabelScanControls(t *testing.T) {
 		{name: "prose in a run script", src: forkWorkflowDoc(pr, "    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          # the Blacksmith runner's environment caps argv\n          echo hi\n")},
 		{name: "job that calls a reusable workflow", src: forkWorkflowDoc(pr, "    uses: ./.github/workflows/x.yml\n")},
 		{name: "fork-owned workflow on hosted runners", file: "fork-x.yml", src: forkWorkflowDoc("on:\n  pull_request:\n    branches: [integration]\n", "    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest]\n    runs-on: ${{ matrix.os }}\n")},
+		{name: "post-sync os form: the guard in runs-on, the hosted os beside each Blacksmith runner (pr.yml's platform legs)", src: forkWorkflowDoc(pr, osForm("windows-latest", "macos-latest", osGuarded))},
+		{name: "runs-on: self-hosted, which spells no Blacksmith label", src: forkWorkflowDoc(pr, "    runs-on: self-hosted\n")},
+		// A literal never reaches the pass that resolves an expression, so the one
+		// above cannot tell whether the hosted-fallback rule stops at the sites that
+		// spell a Blacksmith label: R6 v4 is about Blacksmith, not a ban on other
+		// labels. This one resolves to a label that is not hosted and spells none.
+		{name: "expression over a self-hosted cell, which spells no Blacksmith label", src: forkWorkflowDoc(pr, "    strategy:\n      matrix:\n        os: [self-hosted, ubuntu-latest]\n    runs-on: ${{ matrix.os }}\n")},
 		{name: "matrix ternary on a workflow that only runs on a push to main", src: forkWorkflowDoc("on:\n  push:\n    branches: [main]\n", matrixTernary)},
 		{name: "bare literals on a workflow that only runs on a push to main (main.yml)", file: "main.yml", src: forkWorkflowDoc("on:\n  push:\n    branches: [main]\n", "    runs-on: ${{ '"+bsMac+"' }}\n    env:\n      RUNNER: "+bs4+"\n")},
 
@@ -1186,6 +1232,7 @@ func TestForkRunnerLabelScanControls(t *testing.T) {
 		{name: "lane behind an event that never happens", src: forkWorkflowDoc(pr, "    runs-on: ${{ github.event_name == 'never' && '"+bs4+"' || 'ubuntu-latest' }}\n"), dead: 1},
 		{name: "fallback form guarded on the wrong owner", src: forkWorkflowDoc(pr, fallbackCells+"    runs-on: ${{ github.repository_owner == 'gastownhal' && matrix.runner || matrix.fallback }}\n"), dead: 1},
 		{name: "matrix cells guarded on the wrong owner", src: forkWorkflowDoc(pr, matrix+"          - runner: ${{ github.repository_owner == 'gastownhal' && '"+bsWin+"' || 'windows-latest' }}\n    runs-on: ${{ matrix.runner }}\n"), dead: 1},
+		{name: "os form guarded on the wrong owner", src: forkWorkflowDoc(pr, osForm("windows-latest", "macos-latest", strings.Replace(osGuarded, "'gastownhall'", "'gastownhal'", 1))), dead: 1},
 		// One label that is reached does not vouch for the others the site spells.
 		{name: "matrix cells where only the second guard has a typo in the owner", src: forkWorkflowDoc(pr, primaryTypoSecond), dead: 1},
 		{name: "chain of labels where only the second branch has a typo in the owner", src: forkWorkflowDoc(pr, "    runs-on: "+byEvent("gastownhal")+"\n"), dead: 1},
@@ -1214,6 +1261,19 @@ func TestForkRunnerLabelScanControls(t *testing.T) {
 	}
 	if got := forkRunnerScanWorkflow(".github/workflows/a.yml", []byte(forkWorkflowDoc(pr, fallbackMissing))); len(got.leaks) != 1 || !strings.Contains(got.leaks[0], "matrix.fallback unset") {
 		t.Errorf("a fallback one entry leaves out is reported as %q, want it to name matrix.fallback as unset", got.leaks)
+	}
+	if got := forkRunnerScanWorkflow(".github/workflows/a.yml", []byte(forkWorkflowDoc(pr, osMissing))); len(got.leaks) != 1 || !strings.Contains(got.leaks[0], "matrix.os unset") {
+		t.Errorf("an os one entry leaves out is reported as %q, want it to name matrix.os as unset", got.leaks)
+	}
+	// A fallback that is no GitHub-hosted runner says so, whichever workflow it
+	// is in, not only a fork-owned one.
+	for _, c := range []struct{ name, src string }{
+		{"an os of macos, with no dash", forkWorkflowDoc(pr, osForm("windows-latest", "macos", osGuarded))},
+		{"a guarded literal whose fallback is self-hosted", forkWorkflowDoc(pr, "    runs-on: "+cellGuard(bs2, "self-hosted")+"\n")},
+	} {
+		if got := forkRunnerScanWorkflow(".github/workflows/a.yml", []byte(c.src)); len(got.leaks) != 1 || !strings.Contains(got.leaks[0], "not a GitHub-hosted runner") {
+			t.Errorf("%s is reported as %q, want one leak that says it is not a GitHub-hosted runner", c.name, got.leaks)
+		}
 	}
 	// Only a label runs-on can choose is expected of gastownhall's world: an
 	// operand of == or != is compared with something, and a marker is no label.
