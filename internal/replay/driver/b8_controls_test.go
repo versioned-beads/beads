@@ -208,14 +208,18 @@ func seedLogMessages(t testing.TB, dir string, n int) []string {
 	return out
 }
 
-// B8.FirstOpenMigrates: the first bd command on the prepared copy is what migrates
-// it. The main track goes from the base's version to the integration's latest, the
-// ignored track to its latest, each pending migration is one commit, and the verb
-// has nothing left to do afterwards. A bd that did not migrate on first open would
-// leave the recipe's migrate verb with work the recipe does not expect.
-func TestB8FirstOpenMigrates(t *testing.T) {
+// B8.MigrationNeedsConsent: the first bd command on the prepared copy does not
+// migrate it. The copy is behind the integration's schema, and the product refuses
+// to open it until the operator consents: it says how far behind the copy is and
+// leaves the copy as it found it, in a process that has the override variables set,
+// none of which reaches the child. The migrate verb is the consent. It takes the
+// main track from the base's version to the integration's latest and the ignored
+// track to its latest, each pending migration is one commit, and a second run has
+// nothing left to do. The recipe's own migrate verb relies on exactly this.
+func TestB8MigrationNeedsConsent(t *testing.T) {
 	o := sharedSeedOracle(t, defaultSeedVariant)
 	cfg := newSeedConfig(t, o)
+	seedSetOverrides(t)
 	cfg.Log = &doltcli.ChildLog{}
 	if err := seedUntilMigration(t, cfg, nil); !errors.Is(err, errStopSeed) {
 		t.Fatalf("seeding up to the migration: %v", err)
@@ -228,25 +232,54 @@ func TestB8FirstOpenMigrates(t *testing.T) {
 		t.Fatalf("the prepared copy is at schema %d, the integration's latest is %d: nothing is pending", before.Version, schema.LatestVersion())
 	}
 
+	// The refusal is the product's JSON on standard error. Only its structured
+	// fields are read here, never its prose.
 	runner := cfg.childRunner()
-	if _, err := runner.Bd(ctx, cfg.WorkDir, "count", "--json"); err != nil {
-		t.Fatalf("the first bd command on the prepared copy: %v", err)
+	_, err := runner.Bd(ctx, cfg.WorkDir, "count", "--json")
+	var exit *doltcli.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("the first bd command on the prepared copy returned %v, want a refusal to migrate without consent", err)
+	}
+	if exit.ExitCode <= 0 {
+		t.Errorf("the refusing command exited %d, want a status above zero", exit.ExitCode)
+	}
+	var refusal struct {
+		MigrateConsent struct {
+			CurrentVersion        int  `json:"current_version"`
+			RequiredVersion       int  `json:"required_version"`
+			Pending               int  `json:"pending"`
+			HumanDecisionRequired bool `json:"human_decision_required"`
+		} `json:"migrate_consent"`
+	}
+	if err := json.Unmarshal(exit.Stderr, &refusal); err != nil {
+		t.Fatalf("the refusal is not JSON on standard error: %v\n%s", err, exit.Stderr)
+	}
+	if mc := refusal.MigrateConsent; mc.CurrentVersion != before.Version || mc.RequiredVersion != schema.LatestVersion() || mc.Pending != pending || !mc.HumanDecisionRequired {
+		t.Errorf("the refusal reports %+v, want the operator's decision to move the copy from %d to %d across %d migrations:\n%s",
+			mc, before.Version, schema.LatestVersion(), pending, exit.Stderr)
+	}
+	if refused := readSeedStoreFacts(t, data); !seedSameCommittedState(before, refused) {
+		t.Fatalf("the refused open changed the copy:\n  before %+v\n  after  %+v", before, refused)
+	}
+
+	if _, err := runner.Bd(ctx, cfg.WorkDir, "migrate", "schema", "--json"); err != nil {
+		t.Fatalf("the migrate verb on the prepared copy: %v", err)
 	}
 	after := readSeedStoreFacts(t, data)
 	if after.Version != schema.LatestVersion() {
-		t.Errorf("the main track is at %d after the first open, want %d", after.Version, schema.LatestVersion())
+		t.Errorf("the main track is at %d after the migrate verb, want %d", after.Version, schema.LatestVersion())
 	}
 	if after.IgnoredVersion != schema.LatestIgnoredVersion() {
-		t.Errorf("the ignored track is at %d after the first open, want %d", after.IgnoredVersion, schema.LatestIgnoredVersion())
+		t.Errorf("the ignored track is at %d after the migrate verb, want %d", after.IgnoredVersion, schema.LatestIgnoredVersion())
 	}
 	n := after.LogLen - before.LogLen
 	if n <= 0 {
-		t.Fatalf("the first open added %d commits, want the migration's", n)
+		t.Fatalf("the migrate verb added %d commits, want the migration's", n)
 	}
 	applied, seeds := 0, 0
 	for _, m := range seedLogMessages(t, data, n) {
 		if !strings.HasPrefix(m, "schema: ") {
-			t.Errorf("a commit the first open made has the message %q, want one that starts with %q", m, "schema: ")
+			t.Errorf("a commit the migrate verb made has the message %q, want one that starts with %q", m, "schema: ")
 		}
 		if strings.HasPrefix(m, "schema: apply migration ") {
 			applied++
@@ -259,14 +292,23 @@ func TestB8FirstOpenMigrates(t *testing.T) {
 		t.Errorf("%d migration commits for %d pending migrations", applied, pending)
 	}
 	if n != applied+seeds {
-		t.Errorf("the first open made %d commits, %d of them migrations and %d seeding the ignore patterns: want no others", n, applied, seeds)
+		t.Errorf("the migrate verb made %d commits, %d of them migrations and %d seeding the ignore patterns: want no others", n, applied, seeds)
 	}
 
+	// Consent is the verb and not a setting of the process: the migrated copy opens
+	// with no consent at all, and a second run of the verb leaves it as it is.
+	if _, err := runner.Bd(ctx, cfg.WorkDir, "count", "--json"); err != nil {
+		t.Fatalf("the first bd command on the migrated copy: %v", err)
+	}
+	opened := readSeedStoreFacts(t, data)
+	if !seedSameCommittedState(after, opened) {
+		t.Errorf("opening the migrated copy changed it:\n  before %+v\n  after  %+v", after, opened)
+	}
 	if _, err := runner.Bd(ctx, cfg.WorkDir, "migrate", "schema", "--json"); err != nil {
 		t.Fatalf("the migrate verb on a migrated copy: %v", err)
 	}
-	if again := readSeedStoreFacts(t, data); !seedSameCommittedState(after, again) {
-		t.Errorf("the migrate verb changed a copy the first open had already migrated:\n  before %+v\n  after  %+v", after, again)
+	if again := readSeedStoreFacts(t, data); !seedSameCommittedState(opened, again) {
+		t.Errorf("the migrate verb changed a copy it had already migrated:\n  before %+v\n  after  %+v", opened, again)
 	}
 }
 
