@@ -328,3 +328,61 @@ func TestIssueCreateFieldsRefusalAndRollback(t *testing.T) {
 		})
 	}
 }
+
+// Storage may keep the creator a request implies, and nothing else. The table
+// drives the whole exactness guard over otherwise identical Issues, so it also
+// fails if the creator comparison is deleted from the guard.
+func TestCreateFieldsCreatorExactness(t *testing.T) {
+	for _, tc := range []struct {
+		name                          string
+		requestCreator, actor, stored string
+		accepted                      bool
+	}{
+		{"defaulted-to-actor", "", "a", "a", true},
+		{"default-dropped", "", "a", "", false},
+		{"default-replaced", "", "a", "b", false},
+		{"explicit-overwritten-by-actor", "x", "a", "a", false},
+		{"explicit-kept", "x", "a", "x", true},
+		{"explicit-dropped", "x", "a", "", false},
+		{"no-creator-no-actor-stays-empty", "", "", "", true},
+		{"no-creator-no-actor-invented", "", "", "b", false},
+		{"actor-kept-verbatim", "", "  a ", "  a ", true},
+		{"actor-not-trimmed", "", "  a ", "a", false},
+		{"actor-not-case-folded", "", "Alice", "alice", false},
+		{"actor-not-canonicalized", "", "gastown.mayor", "gastown_mayor", false},
+		{"explicit-kept-verbatim", "  x ", "a", "  x ", true},
+		{"explicit-not-trimmed", "  x ", "a", "x", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := &publicops.Issue{Title: "Creator", CreatedBy: tc.requestCreator}
+			got := &publicops.Issue{Title: "Creator", CreatedBy: tc.stored}
+			if accepted := sameIssueCreateFields(want, got, tc.actor); accepted != tc.accepted {
+				t.Fatalf("creator %q actor %q stored %q: accepted=%t want %t", tc.requestCreator, tc.actor, tc.stored, accepted, tc.accepted)
+			}
+			if want.CreatedBy != tc.requestCreator {
+				t.Fatal("the guard rewrote the caller's creator")
+			}
+		})
+	}
+	// Only the creator is relaxed. Storage has no Owner default, and changed
+	// notes are still a coercion, even when the creator is the defaulted actor.
+	for _, tc := range []struct {
+		name   string
+		change func(*publicops.Issue)
+	}{
+		{"owner", func(i *publicops.Issue) { i.Owner = "a" }},
+		{"notes", func(i *publicops.Issue) { i.Notes = "changed" }},
+	} {
+		t.Run("defaulted-creator-keeps-"+tc.name+"-exact", func(t *testing.T) {
+			want := &publicops.Issue{Title: "Creator"}
+			got := &publicops.Issue{Title: "Creator", CreatedBy: "a"}
+			if !sameIssueCreateFields(want, got, "a") {
+				t.Fatal("control: the defaulted creator alone was refused")
+			}
+			tc.change(got)
+			if sameIssueCreateFields(want, got, "a") {
+				t.Fatalf("a defaulted creator also admitted a changed %s", tc.name)
+			}
+		})
+	}
+}

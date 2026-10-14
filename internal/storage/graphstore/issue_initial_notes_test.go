@@ -25,10 +25,21 @@ func initialNotesRequest(title string) publicops.CreateRequest {
 	return request
 }
 
+// wantCreator is the creator a create must store. An empty creator is no longer
+// a literal since c4e667cb1 (#7471): the request actor becomes the creator. It
+// is spelled out here, apart from the production guard, so this expectation does
+// not validate that guard with itself.
+func wantCreator(request publicops.CreateRequest) string {
+	if request.Issue.CreatedBy != "" {
+		return request.Issue.CreatedBy
+	}
+	return request.Actor
+}
+
 func assertInitialNotes(t *testing.T, got IssueRecord, request publicops.CreateRequest) {
 	t.Helper()
 	assertCreateFields(t, got, request)
-	if got.Properties.Notes != request.Issue.Notes || got.Properties.Owner != request.Issue.Owner || got.Properties.CreatedBy != request.Issue.CreatedBy {
+	if got.Properties.Notes != request.Issue.Notes || got.Properties.Owner != request.Issue.Owner || got.Properties.CreatedBy != wantCreator(request) {
 		t.Fatal("initial notes/owner/creator were defaulted, normalized or lost")
 	}
 }

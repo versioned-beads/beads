@@ -64,9 +64,26 @@ func validateIssueCreateFields(issue *types.Issue) error {
 	return validateIssueReferenceStorage("spec_id", issue.SpecID)
 }
 
-func sameIssueCreateFields(want, got *types.Issue) bool {
+// createdByRepresented reports whether storage kept the creator a create asked
+// for. An explicit creator must come back unchanged. A request without one gets
+// the request actor, verbatim, from PreparePublicCreateRequest, so that actor is
+// the effective creator. Neither side is trimmed, folded or canonicalized, and
+// an empty effective creator accepts only an empty stored creator: any other
+// stored value is still a coercion the caller never asked for.
+func createdByRepresented(requestCreatedBy, requestActor, storedCreatedBy string) bool {
+	effective := requestCreatedBy
+	if effective == "" {
+		effective = requestActor
+	}
+	return storedCreatedBy == effective
+}
+
+// sameIssueCreateFields checks the stored Issue against the create request. The
+// actor is the request actor, which storage keeps as the creator when the request
+// names none.
+func sameIssueCreateFields(want, got *types.Issue, actor string) bool {
 	return got != nil && want.Design == got.Design && want.AcceptanceCriteria == got.AcceptanceCriteria &&
 		want.Assignee == got.Assignee && want.SpecID == got.SpecID &&
-		sameIssueDue(want.DueAt, got.DueAt) && want.Notes == got.Notes && want.Owner == got.Owner && want.CreatedBy == got.CreatedBy &&
+		sameIssueDue(want.DueAt, got.DueAt) && want.Notes == got.Notes && want.Owner == got.Owner && createdByRepresented(want.CreatedBy, actor, got.CreatedBy) &&
 		reflect.DeepEqual(want.EstimatedMinutes, got.EstimatedMinutes) && reflect.DeepEqual(want.ExternalRef, got.ExternalRef)
 }
