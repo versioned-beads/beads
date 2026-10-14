@@ -30,9 +30,10 @@ type Cell struct {
 // dolt or bd process the harness starts: letting one through risks silently
 // routing a replay at a shared or production store, or attaching the wrong
 // actor identity to a mutation the harness makes on its own behalf. The last
-// three are the product's own switches for its safety checks (the remote-backed
-// migration gate, the workspace identity check and the schema-skew check): a
-// harness that let one through would be testing a product with its guards off.
+// four are the product's own switches for its safety checks (the migration
+// consent gate, its older alias that also opens the remote-backed migration
+// gate, the workspace identity check and the schema-skew check): a harness that
+// let one through would be testing a product with its guards off.
 var deniedEnvVars = map[string]bool{
 	"BEADS_DOLT_SERVER_PORT":      true,
 	"BEADS_DOLT_PORT":             true,
@@ -45,6 +46,7 @@ var deniedEnvVars = map[string]bool{
 	"BEADS_DOLT_AUTO_START":       true,
 	"BEADS_DOLT_SYNC_CLI_REMOTES": true,
 	"BEADS_BACKUP_ENABLED":        true,
+	"BD_ALLOW_MIGRATE":            true,
 	"BD_ALLOW_REMOTE_MIGRATE":     true,
 	"BEADS_SKIP_IDENTITY_CHECK":   true,
 	"BD_IGNORE_SCHEMA_SKEW":       true,

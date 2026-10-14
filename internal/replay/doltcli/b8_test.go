@@ -258,6 +258,7 @@ func TestB8ChildEnvIsAllowList(t *testing.T) {
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "ambient-home"))
 	t.Setenv("B8_AMBIENT_CANARY", "leaked")
+	t.Setenv("BD_ALLOW_MIGRATE", "1")
 	t.Setenv("BD_ALLOW_REMOTE_MIGRATE", "1")
 	t.Setenv("BEADS_SKIP_IDENTITY_CHECK", "1")
 	t.Setenv("BD_IGNORE_SCHEMA_SKEW", "1")

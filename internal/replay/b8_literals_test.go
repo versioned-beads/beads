@@ -39,6 +39,7 @@ const (
 // overrideNames are assembled from fragments so this file does not match its own
 // scan, as hygienePatterns is.
 var overrideNames = []string{
+	"BD_ALLOW_" + "MIGRATE",
 	"BD_ALLOW_" + "REMOTE_MIGRATE",
 	"BEADS_SKIP_" + "IDENTITY_CHECK",
 	"BD_IGNORE_" + "SCHEMA_SKEW",

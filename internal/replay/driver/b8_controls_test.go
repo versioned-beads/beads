@@ -20,22 +20,23 @@ import (
 // The controls: each one makes a precondition of the recipe fail on purpose and
 // shows that the seeding refuses, says which precondition it was, and leaves the
 // store as it found it. A control that could pass with the recipe missing proves
-// nothing, so each runs with the three override variables set in its own
+// nothing, so each runs with the four override variables set in its own
 // environment: if one reached a child, the product would let the write through.
 
 // seedOverrideNames are the variables that tell the product to skip a check the
-// seeding exists to satisfy: the remote-migrate gate, the workspace identity
-// check and the schema-skew refusal. The tests set them to prove none of them
-// reaches a child, and this is one of the few files that names them.
+// seeding exists to satisfy: the migration consent gate, the remote-migrate gate
+// (whose switch the consent gate also honors), the workspace identity check and
+// the schema-skew refusal. The tests set them to prove none of them reaches a
+// child, and this is one of the few files that names them.
 var seedOverrideNames = []string{
-	"BD_ALLOW_REMOTE_MIGRATE", "BEADS_SKIP_IDENTITY_CHECK", "BD_IGNORE_SCHEMA_SKEW",
+	"BD_ALLOW_MIGRATE", "BD_ALLOW_REMOTE_MIGRATE", "BEADS_SKIP_IDENTITY_CHECK", "BD_IGNORE_SCHEMA_SKEW",
 }
 
 // seedCanary is a variable nothing reads. If it shows up in a child's environment,
 // the child was handed the caller's environment and not the allow-list.
 const seedCanary = "B8_SEED_CANARY"
 
-// seedSetOverrides puts the three override variables in the calling test's
+// seedSetOverrides puts the four override variables in the calling test's
 // environment. Call it after replaytest.Isolate, which does not clear them.
 func seedSetOverrides(t testing.TB) {
 	t.Helper()
@@ -400,10 +401,10 @@ func TestB8SeedRefusesWhileTargetsRemain(t *testing.T) {
 	}
 }
 
-// B8.OverrideEnvStripped (H14): none of the three override variables reaches a
+// B8.OverrideEnvStripped (H14): none of the four override variables reaches a
 // child. The unit half sets them and asks the two environment builders; the other
 // half reads what the children of a whole seeding and replay actually received,
-// recorded by the stand-ins that ran them, in a process that had all three set.
+// recorded by the stand-ins that ran them, in a process that had all four set.
 func TestB8OverrideEnvStripped(t *testing.T) {
 	seedSetOverrides(t)
 	t.Setenv(seedCanary, "1")
