@@ -136,6 +136,15 @@ func TestForkProxiedShardScriptReadsTheManifestOverride(t *testing.T) {
 	}
 
 	bash := requireHostTool(t, "bash")
+
+	// The shard script uses bash 4 associative arrays (declare -A), and macOS
+	// ships bash 3.2. Probe the bash it is about to run with, so the dynamic
+	// half below runs wherever the script can run and is skipped (failed
+	// under Bazel) where its prerequisite is missing.
+	if err := exec.Command(bash, "-c", "declare -A probe=()").Run(); err != nil {
+		skipOrFailWithoutHostTool(t, "bash lacks associative arrays (bash >= 4 required by %s)", forkProxiedManifestScript)
+	}
+
 	cmd := exec.Command(bash, forkProxiedManifestScript, strconv.Itoa(shard), strconv.Itoa(forkProxiedManifestShards))
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "BEADS_TEST_SHARD_LIST_ONLY=1", forkProxiedManifestEnv+"="+probe)
