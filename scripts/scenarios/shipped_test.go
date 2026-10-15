@@ -9,18 +9,11 @@ import (
 )
 
 // These tests read the files this package ships next to its sources. Under
-// `bazel test` those files are not declared as data on purpose (a scenario
-// must be addable without touching BUILD.bazel), so they run under go test.
-func skipUnderBazel(t *testing.T) {
-	t.Helper()
-	if os.Getenv("TEST_SRCDIR") != "" {
-		t.Skip("reads files shipped next to the sources; runs under go test")
-	}
-}
-
+// `bazel test` the go_test declares the package's own repo_files partitions as
+// data, not the scenarios one by one (a scenario must be addable without
+// touching BUILD.bazel), so they run under Bazel as they do under go test.
 func loadShipped(t *testing.T) map[string]*Scenario {
 	t.Helper()
-	skipUnderBazel(t)
 	got, err := loadScenarios("scenarios")
 	if err != nil {
 		t.Fatalf("the shipped scenarios do not load: %v", err)
@@ -167,7 +160,6 @@ func TestShippedR2NoSilentOverwrite(t *testing.T) {
 }
 
 func TestPackageDoesNotEmbedOrListScenarios(t *testing.T) {
-	skipUnderBazel(t)
 	// Only the package's own sources matter, and only the real directive: this
 	// test file and the docs legitimately mention go:embed in prose.
 	directive := regexp.MustCompile(`(?m)^\s*//go:embed\b`)
@@ -194,7 +186,6 @@ func TestPackageDoesNotEmbedOrListScenarios(t *testing.T) {
 }
 
 func TestREADMEDocumentsTheContract(t *testing.T) {
-	skipUnderBazel(t)
 	raw, err := os.ReadFile("README.md")
 	if err != nil {
 		t.Fatalf("README.md: %v", err)

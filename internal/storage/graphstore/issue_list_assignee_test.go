@@ -97,7 +97,13 @@ func TestGraphIssueListAssigneeFilters(t *testing.T) {
 					assertIssueListRetained(t, ctx, s, entry.path, before)
 				}
 				if entry.closed {
-					result, err := s.CloseIssue(ctx, entry.path, "complete", "fixture")
+					// Since #7425 only an assigned issue's assignee may close it; anyone
+					// may close an unassigned one.
+					closer := entry.assignee
+					if closer == "" {
+						closer = "fixture"
+					}
+					result, err := s.CloseIssue(ctx, entry.path, "complete", closer)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -252,6 +258,39 @@ func TestGraphIssueListAssigneeFilters(t *testing.T) {
 			}
 			if !reflect.DeepEqual(before, reopenState(t, ctx, s)) {
 				t.Fatal("read-only list/filter changed stored state")
+			}
+		})
+	}
+}
+
+// The closes above pass the assignee fence rather than go around it: a close by
+// an actor other than the assignee is refused with the inherited ownership error
+// and leaves the stored state alone. Only the error class is pinned, not its text.
+func TestGraphIssueCloseRefusesAnotherActor(t *testing.T) {
+	for _, backend := range []string{"embedded", "server"} {
+		t.Run(backend, func(t *testing.T) {
+			ctx, _, s, _, _, _ := reopenFixture(t, backend)
+			created, err := s.CreateIssue(ctx, "beads/fenced", plainIssue("Fenced"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			assigned, err := s.UpdateIssue(ctx, UpdateIssueRequest{Path: "beads/fenced", Actor: "fixture", ExpectedRevision: created.Revision, Assignee: issueEditString("Alice")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := reopenState(t, ctx, s)
+			if _, err := s.CloseIssue(ctx, "beads/fenced", "complete", "fixture"); !errors.Is(err, storage.ErrNotOwner) {
+				t.Fatalf("close by another actor: %v, want %v", err, storage.ErrNotOwner)
+			}
+			if current, err := s.ShowIssue(ctx, "beads/fenced"); err != nil || !reflect.DeepEqual(current, assigned.Issue) {
+				t.Fatalf("a refused close changed the Issue: %+v %v", current, err)
+			}
+			if !reflect.DeepEqual(before, reopenState(t, ctx, s)) {
+				t.Fatal("a refused close changed stored state")
+			}
+			closed, err := s.CloseIssue(ctx, "beads/fenced", "complete", "Alice")
+			if err != nil || closed.Issue.Properties.Status != types.StatusClosed {
+				t.Fatalf("close by the assignee: %+v %v", closed, err)
 			}
 		})
 	}

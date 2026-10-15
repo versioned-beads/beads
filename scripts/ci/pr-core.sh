@@ -20,18 +20,24 @@ beads_test_env_enter
 GO_TEST_PKG_PARALLEL="${GO_TEST_PKG_PARALLEL:-4}"
 GO_TEST_PARALLEL="${GO_TEST_PARALLEL:-4}"
 
-# Reuse the exhaustive sequential graphstore dispatcher. Each group retains
-# the same race/short/30m/TestEmbedded policy; all other packages still run once.
-# Unique evidence directories preserve failed/repeated local invocations.
-mkdir -p "$REPO_ROOT/artifacts/pr-core-go-test"
-pr_core_evidence="$(mktemp -d "$REPO_ROOT/artifacts/pr-core-go-test/run.XXXXXX")"
-pr_core_args=(--output "$pr_core_evidence/evidence"
-    --package-parallel "$GO_TEST_PKG_PARALLEL" --test-parallel "$GO_TEST_PARALLEL")
-# nightly's Bazel equivalence consumer gets actual concatenated Go JSON only,
-# including partial failed output; dispatcher diagnostics remain on the console.
-if [[ -n "${BEADS_PR_CORE_GO_TEST_JSON:-}" ]]; then
-    pr_core_args+=(--json-output "$BEADS_PR_CORE_GO_TEST_JSON")
-fi
+# Without an explicit -timeout every package gets Go's 10m default, and ./cmd/bd
+# has outgrown it: measured through this wrapper it takes 572s, which leaves 28s
+# — under 5% — of margin. Runner variance eats that, and the package then dies on
+# the alarm at 600.3s/600.7s (two consecutive runs on #6090; #6038 squeaked in
+# just under). No single test is at fault, so the panic names whichever one was
+# in flight and reads like a hang when it is really the whole package running out
+# of clock. 30m is what every other -race lane here already gives this same code:
+# main.yml's macOS test job. Splitting or de-slowing cmd/bd is the real fix and belongs on main
+# — this only stops the clock from being the thing that fails.
+# BEADS_PR_CORE_GO_TEST_JSON=<file>: same run, `go test -json` output to <file>
+# (for tools/bazel/equivalence.py --go-test-json, the skip-parity check).
+go_test() {
+    if [[ -n "${BEADS_PR_CORE_GO_TEST_JSON:-}" ]]; then
+        go test -json "$@" >"$BEADS_PR_CORE_GO_TEST_JSON"
+    else
+        go test "$@"
+    fi
+}
 
 ci_time "pr-core go test" -- \
-    python3 "$REPO_ROOT/scripts/ci/macos-go-test.py" "${pr_core_args[@]}"
+    go_test -p "$GO_TEST_PKG_PARALLEL" -parallel "$GO_TEST_PARALLEL" -race -short -timeout=30m -skip '^TestEmbedded' ./...

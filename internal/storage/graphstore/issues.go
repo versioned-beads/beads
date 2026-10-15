@@ -86,7 +86,7 @@ func (s *Store) CreateIssue(ctx context.Context, path string, request publicops.
 		// ExecuteCreate already owns the initial retained snapshot. Verify its
 		// hydrated values before publishing the graph mapping; a coercion rolls
 		// back that snapshot and all ordinary create effects in this transaction.
-		if !sameIssueCreateFields(request.Issue, created.Issue) {
+		if !sameIssueCreateFields(request.Issue, created.Issue, request.Actor) {
 			return fmt.Errorf("%w: Issue initial fields cannot be represented exactly by storage", storage.ErrValidation)
 		}
 		if issueops.IsWisp(created.Issue) {

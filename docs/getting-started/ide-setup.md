@@ -5,13 +5,13 @@ description: Configure bd setup recipes, hooks, and instruction files for Claude
 
 Configure your IDE or coding agent for optimal beads integration.
 
-Last reviewed: 2026-10-06
+Last reviewed: 2026-10-05
 
 Freshness source: `cmd/bd/setup*.go`, `cmd/bd/setup/`, `internal/recipes/`, and `internal/templates/`.
 
 ## How `bd setup` Works
 
-The `bd setup` command uses a **recipe-based architecture**: recipes define where beads workflow instructions are written. Built-in recipes cover popular tools, and you can add custom recipes for any other tool (see Custom Recipes below). Integrations complement each other — you can install several side by side, one `bd setup` run per recipe.
+The `bd setup` command uses a **recipe-based architecture**: recipes define where beads workflow instructions are written. Built-in recipes cover popular tools, and you can add custom recipes for any other tool (see Custom Recipes below). Integrations complement each other — you can install several at once.
 
 ```bash
 bd setup --list             # Show all available recipes
@@ -23,12 +23,12 @@ bd setup claude --remove    # Uninstall
 | Recipe | Files written | Details |
 |--------|---------------|---------|
 | `claude` | `.claude/settings.json` (or `~/.claude/settings.json` with `--global`) + `CLAUDE.md` section | [Claude Code](/integrations/claude-code) |
-| `cursor` | `.cursor/rules/beads.mdc` + `.cursor/hooks.json` + `.agents/skills/beads/` | [Cursor](/integrations/cursor) |
+| `cursor` | `.cursor/rules/beads.mdc` + `.agents/skills/beads/` + `.cursor/hooks.json` (with `--global`: `~/.cursor/hooks.json` + `~/.agents/skills/beads/`, no rules file) | [Cursor](/integrations/cursor) |
 | `gemini` | `~/.gemini/settings.json` (or `.gemini/settings.json` with `--project`) + `GEMINI.md` section | [Gemini CLI](/integrations/gemini) |
 | `copilot` | `.copilot-plugin/plugin.json` + `.github/copilot-instructions.md` | [Copilot CLI](/integrations/copilot-cli) |
-| `codex` | `.agents/skills/beads/` + `AGENTS.md` section + `.codex/` hooks | [Codex](/integrations/codex) |
+| `codex` | `.agents/skills/beads/` + `AGENTS.md` section + `.codex/` hooks (with `--global`: `~/.agents/skills/beads/` + `$CODEX_HOME` or `~/.codex`) | [Codex](/integrations/codex) |
 | `factory` | `AGENTS.md` section | [Factory.ai Droid](/integrations/factory) |
-| `mux` | `AGENTS.md` section + `.mux/` hook files (+ `.mux/AGENTS.md` with `--project`, `~/.mux/AGENTS.md` with `--global`) | [Mux](/integrations/mux) |
+| `mux` | `AGENTS.md` section (+ `.mux/` layers with `--project`/`--global`) | [Mux](/integrations/mux) |
 | `opencode` | `AGENTS.md` section | [OpenCode](/integrations/opencode) |
 | `aider` | `.aider.conf.yml` + `.aider/BEADS.md` + `.aider/README.md` | [Aider](/integrations/aider) |
 | `junie` | `.junie/guidelines.md` + `.junie/mcp/mcp.json` | [Junie](/integrations/junie) |
@@ -50,11 +50,11 @@ Integrations that add a managed section to the tool's instruction file (`AGENTS.
 | Profile | Used by | Content |
 |---------|---------|---------|
 | `full` | Factory, Mux, OpenCode | Complete command reference, issue types, priorities, workflow |
-| `minimal` | Claude Code, Gemini CLI | Pointer to `bd prime`, quick reference only (~60% fewer lines) |
+| `minimal` | Claude Code, Gemini CLI | Pointer to `bd prime`, quick reference only (~60% smaller) |
 
 Claude Code and Gemini CLI use the `minimal` profile because their hooks run `bd prime` at session start and inject full context. AGENTS-first agents use the `full` profile because their instruction file remains the primary integration surface. Codex is skill-based instead: it uses `.agents/skills/beads/SKILL.md`, with managed `AGENTS.md` guidance telling Codex when to use the skill. Every other recipe (Copilot, Cursor, Aider, Junie, and the single-file ones) writes its own fixed file content and uses no profile.
 
-**Profile precedence:** if a file already has a `full` profile section and a `minimal` profile tool installs to the same file (for example when `CLAUDE.md` imports `AGENTS.md`), the `full` profile is preserved to avoid information loss.
+**Profile precedence:** if a file already has a `full` profile section and a `minimal` profile tool installs to the same file (for example via symlinks), the `full` profile is preserved to avoid information loss.
 
 ### Policy Profiles
 
@@ -63,7 +63,7 @@ Template profiles control how much text gets installed. Policy profiles control 
 | Policy | Default scope | Commit/push guidance |
 |--------|---------------|----------------------|
 | `conservative` | Standalone projects, unknown projects, and one-off assistance | Use `bd` for task tracking, then report changed files, validation, and proposed commands. Do not commit, push, or run Dolt remote sync without explicit user or orchestrator approval. |
-| `minimal` | Hook-first integrations where `bd prime` carries the detailed workflow | Same git authority as conservative. It does not change what gets installed: each recipe picks its own template profile. |
+| `minimal` | Hook-first integrations where `bd prime` carries the detailed workflow | Same git authority as conservative; the installed file stays short and points to `bd prime`. |
 | `team-maintainer` | Repositories that explicitly delegate session close to agents | Agents may close beads, run quality gates, commit, run `bd dolt push`, and `git push` as part of routine work. Current "do not commit" or "do not push" instructions still override the profile. |
 
 The generated beads section and `bd prime` default to conservative git authority. Set the profile explicitly with the `agent.profile` config key or the `BD_AGENT_PROFILE` environment variable (values: `conservative`, `minimal`, `team-maintainer`; the env var takes precedence; an unrecognized value falls back to `conservative`):
@@ -95,15 +95,15 @@ bd setup claude --global   # Global install: ~/.claude/settings.json
 
 This installs:
 - **SessionStart hook** - Runs `bd prime --hook-json`, which wraps the workflow context in the JSON envelope Claude Code expects. SessionStart fires when a session starts, resumes, or clears, and again after context compaction — no separate compaction hook is needed.
-- **Minimal beads section in `CLAUDE.md`** - A pointer to `bd prime`, managed with hash/version markers for safe updates and `--check` freshness detection.
+- **Minimal beads section in `CLAUDE.md`** - A pointer to `bd prime`, managed with hash/version markers for safe updates and `--check` freshness detection. If `CLAUDE.md` is a thin stub that imports `AGENTS.md` (an `@AGENTS.md` line of its own), the section is written to `AGENTS.md` instead, and a stale beads block left in the stub by an older bd is removed.
 
-If the [beads Claude Code plugin](/integrations/claude-code-plugin) is enabled in your Claude Code settings, hooks are plugin-managed and `bd setup claude` skips writing them, so `bd prime` doesn't fire twice per session. If `CLAUDE.md` imports `AGENTS.md` with an `@AGENTS.md` line and `AGENTS.md` exists, the beads section goes into `AGENTS.md` instead, and `--remove` leaves it there.
+If the [beads Claude Code plugin](/integrations/claude-code-plugin) is installed, hooks are plugin-managed and `bd setup claude` skips writing them, so `bd prime` doesn't fire twice per session.
 
 **How it works:**
 1. SessionStart hook runs `bd prime --hook-json` automatically
 2. `bd prime` injects ~1-2k tokens of workflow context
 3. You use `bd` CLI commands directly
-4. Git hooks refresh exports (when `export.auto` is on) and run legacy fallbacks; Dolt remotes handle sync
+4. Git hooks refresh exports and legacy fallbacks; Dolt remotes handle sync
 
 **Flags:**
 
@@ -112,7 +112,7 @@ If the [beads Claude Code plugin](/integrations/claude-code-plugin) is enabled i
 | `--check` | Check the hook and the managed `CLAUDE.md` beads section |
 | `--remove` | Remove beads hooks and the managed `CLAUDE.md` beads section |
 | `--global` | Install to `~/.claude/settings.json` instead of the project |
-| `--stealth` | Use `bd prime --stealth --hook-json` (no git commands in the session close protocol) — useful in CI/CD where git operations might fail |
+| `--stealth` | Use `bd prime --stealth --hook-json` (flush only, no git operations) — useful in CI/CD where git operations might fail |
 
 Restart Claude Code after installation for the hooks to take effect.
 
@@ -143,13 +143,26 @@ If you prefer manual configuration, add the hook to your Claude Code settings:
 ## Cursor IDE
 
 ```bash
-bd setup cursor            # Rules file + agent hooks + beads skill
+bd setup cursor            # Project install: rules file + agent skill + hooks
+bd setup cursor --global   # Global install: hooks + agent skill (no rules file)
 ```
 
-This creates `.cursor/rules/beads.mdc` with beads-aware rules that Cursor
-re-includes every turn. It also adds `sessionStart`, `preCompact`, and `postToolUse` hooks to `.cursor/hooks.json`, which inject `bd prime` at session start and again after a compaction, and installs the beads skill at `.agents/skills/beads/`. The hooks run `bd cursor-hook`, so `bd` must be on `PATH` for Cursor; hooks of your own in `.cursor/hooks.json` are left alone.
+A project install writes three things:
 
-`--global` installs the hooks to `~/.cursor/hooks.json` and the skill to `~/.agents/skills/beads/`. Cursor keeps global rules in Cursor Settings, so no rules file is written. `--remove` deletes the rules file and the beads hooks, and keeps the skill while Codex still uses it.
+- **`.cursor/rules/beads.mdc`** - an always-applied rules file that Cursor
+  re-includes every turn.
+- **`.agents/skills/beads/`** - the beads agent skill, the same one
+  `bd setup codex` installs. `--remove` keeps it while the Codex integration
+  still uses it.
+- **`.cursor/hooks.json`** - `sessionStart`, `preCompact`, and `postToolUse`
+  hooks that run `bd cursor-hook <event>`, so `bd` must be on `PATH` for
+  Cursor. Your own entries in `hooks.json` are left alone.
+
+`--global` writes the hooks to `~/.cursor/hooks.json` and the skill to
+`~/.agents/skills/beads/`. Cursor has no file-based global rules location, so
+add global rules in Cursor Settings or run `bd setup cursor` per project.
+
+Restart Cursor (or start a new `cursor-agent` session) after installing.
 
 **Verify:**
 ```bash
@@ -200,14 +213,15 @@ bd setup aider --check
 
 ```bash
 bd setup factory    # Factory.ai Droid — AGENTS.md section
-bd setup mux        # Mux — AGENTS.md section + .mux/ hooks (+ --project/--global layers)
+bd setup mux        # Mux — AGENTS.md section (+ --project/--global layers)
 bd setup opencode   # OpenCode — AGENTS.md section
 bd setup codex      # Codex — beads skill + AGENTS.md guidance + native hooks
+bd setup codex --global   # Same, under ~/.agents/skills/beads and $CODEX_HOME (or ~/.codex)
 ```
 
-These create or update a managed section in `AGENTS.md` (see Managed Sections above). `bd init` runs the project Claude Code, Codex, and Cursor setups automatically unless `--skip-agents` or `--stealth` is used or the repository is bare. In worktree, shared, or `BEADS_DIR` setups, use `bd where` to confirm the resolved workspace — these integrations do not require a local `./.beads`. Restart the tool after setup if it is already running.
+These create or update a managed section in `AGENTS.md` (see Managed Sections above). `bd init` runs the project Claude Code, Codex, and Cursor setup automatically unless `--skip-agents` or `--stealth` is used (or the repository is bare). In worktree, shared, or `BEADS_DIR` setups, use `bd where` to confirm the resolved workspace — these integrations do not require a local `./.beads`. Restart the tool after setup if it is already running.
 
-`bd setup codex` installs the skill first, then the native hooks (`bd codex-hook` entries in `.codex/hooks.json`, plus `hooks = true` under `[features]` in `.codex/config.toml`), then the `AGENTS.md` guidance. If the beads Codex plugin is enabled in `config.toml`, the plugin provides the hooks and setup skips `hooks.json`. `--global` installs the skill to `~/.agents/skills/beads/` and the rest under `$CODEX_HOME` (default `~/.codex`). `--check` and `--remove` cover all three pieces, and `--remove` keeps the skill while Cursor still uses it.
+`bd setup codex` installs the skill first, then the native hooks (`bd codex-hook` entries in `.codex/hooks.json`, plus `hooks = true` under `[features]` in `.codex/config.toml`), then the `AGENTS.md` guidance. If the beads Codex plugin is enabled in `config.toml`, the plugin provides the hooks and setup skips `hooks.json`. `--check` and `--remove` cover all three pieces, and `--remove` keeps the skill while Cursor still uses it.
 
 Details: [Factory.ai Droid](/integrations/factory), [Mux](/integrations/mux), [OpenCode](/integrations/opencode), [Codex](/integrations/codex).
 
@@ -269,7 +283,7 @@ See [GitHub Copilot Integration](/integrations/github-copilot) for detailed setu
 
 ## Context Injection with `bd prime`
 
-Claude Code, Gemini CLI, Codex, and Cursor run `bd prime` from their hooks to inject context:
+All integrations use `bd prime` to inject context:
 
 ```bash
 bd prime
@@ -277,14 +291,14 @@ bd prime
 
 This outputs a compact (~1-2k tokens) workflow reference including:
 - Available commands
-- Session close protocol, matched to your git setup and agent profile
+- Current project status
 - Workflow patterns
 - Best practices
 - Persistent memories from `bd remember`
 
 `bd prime` prints memories near the top and starts with a truncation warning. If your host stores the full hook output in a file and only shows a preview, have the agent read the full file before continuing.
 
-In hook contexts, `bd prime --hook-json` wraps the output in the SessionStart JSON envelope (Claude Code, Gemini CLI). For memory-only hooks:
+In hook contexts, `bd prime --hook-json` wraps the output in the SessionStart JSON envelope (Claude Code, Gemini CLI, Codex). For memory-only hooks:
 
 ```bash
 bd prime --memories-only
@@ -333,7 +347,7 @@ bd setup myeditor --check                    # Check it
 bd setup myeditor --remove                   # Remove it
 ```
 
-Custom recipes are stored in `.beads/recipes.toml` (adding or using one requires an active beads workspace):
+Custom recipes are stored in `.beads/recipes.toml` (adding one requires an active beads workspace):
 
 ```toml
 [recipes.myeditor]
@@ -353,7 +367,7 @@ bd setup --print
 
 | Type | Description | Used by |
 |------|-------------|---------|
-| `file` | Write the template to a single file | cursor, windsurf, cody, kilocode, kiro |
+| `file` | Write the template to a single file | windsurf, cody, kilocode, kiro, cursor (which also installs a skill and hooks) |
 | `hooks` | Modify JSON settings to add hooks | claude, gemini |
 | `section` | Inject a marked section into a file (created if missing) | factory, codex, mux, opencode |
 | `multifile` | Write multiple files | aider, copilot, junie |
@@ -362,7 +376,7 @@ Custom recipes added via `--add` are always type `file`.
 
 ## Git Hooks
 
-Ensure git hooks are installed for the optional export refresh (`export.auto`, off by default) and legacy fallback behavior:
+Ensure git hooks are installed for export refresh and legacy fallback behavior:
 
 ```bash
 bd hooks install
@@ -378,7 +392,7 @@ This installs:
 **Check hook status:**
 ```bash
 bd hooks list   # Installed, outdated, or missing
-bd info         # Warns if hooks are missing or outdated
+bd info         # Shows warnings if hooks are outdated
 ```
 
 ## Verifying Your Setup
@@ -389,7 +403,7 @@ Run a complete health check:
 # Check version
 bd version
 
-# Check project health (server mode only; includes Claude Code and Cursor integration checks)
+# Check project health (includes integration status)
 bd doctor
 
 # Check git hooks
@@ -400,5 +414,5 @@ bd setup claude --check   # or cursor, gemini, aider, ...
 ```
 
 **Troubleshooting:**
-- *Hooks not working?* Restart your AI tool after installation, then re-run `bd setup claude --check` (or your tool's recipe). In server mode, `bd doctor` also reports Claude Code and Cursor integration status.
-- *Context not appearing?* Make sure `bd prime` prints output standalone. If it prints nothing, `bd where` shows whether a beads workspace resolves; fix any underlying beads issue first.
+- *Hooks not working?* Restart your AI tool after installation, then re-run `bd setup claude --check` (or your tool's recipe) and check `bd doctor` output for integration status.
+- *Context not appearing?* Make sure `bd prime` works standalone; if it fails, fix the underlying beads issue first.

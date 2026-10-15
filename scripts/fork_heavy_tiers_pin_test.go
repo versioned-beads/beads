@@ -1,0 +1,944 @@
+package scripts_test
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"slices"
+	"sort"
+	"strings"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+// This file is the fork's own (upstream has no copy, so syncs never conflict
+// on it). It pins .github/workflows/fork-heavy-tiers.yml, the temporary
+// workflow that keeps the heavy test tiers running on every pull request into
+// integration while the sync replaces pr-risk.yml's copy of them (work package
+// W1, be-fxkoxb; ruling be-4y7b5s sections 3.4, 5.1 rule 4, 8.3 and 11, as
+// amended by be-bg8llq and, for the sixth edit, by be-jvluf7 section 3.5).
+//
+// The workflow is lifted, not written: its eight jobs come out of pr-risk.yml
+// and proxied-local-smoke.yml as they stand at forkHeavyBase with six edits
+// and nothing else (a "Fork Heavy " name prefix, needs cut down to
+// build-embedded, the tier if: dropped, a Blacksmith runs-on made
+// ubuntu-latest, for managed-local-smoke alone its Blacksmith-only cache
+// unit cut: the comment above it and the steps "Compute cache date" and
+// "Restore Blacksmith setup-go cache", which leaves six of its eight steps,
+// and, for test-proxied-cmd alone, one env entry on its "Test proxied-server
+// cmd shard" step, BEADS_TEST_SHARD_MANIFEST naming the fork's own 15-shard
+// split so the lane stops reading upstream's manifest),
+// plus one aggregator, "Fork Heavy Tiers / Required", that fails unless every
+// other job's result is exactly success. The acceptance criteria of the bead
+// are pinned like this:
+//
+//   - 1, the job set and the aggregator: TestForkHeavyTiersJobSetAndAggregator
+//     and TestForkHeavyTiersAggregatorFailsUnlessEveryNeedSucceeded.
+//   - 2, the trigger shape, the text the ruling bars, the helper paths and the
+//     lift diff: TestForkHeavyTiersRunsUnprivilegedOnIntegrationPullRequests,
+//     TestForkHeavyTiersNamesNothingTheRulingBars,
+//     TestForkHeavyTiersNamesOnlyHelpersThatExist,
+//     TestForkHeavyTiersJobsKeepTheirShape and
+//     TestForkHeavyTiersLiftMatchesSourceBlobs.
+//   - 3, R9 over the lane's one workflow: fork_proxied_lane_pin_test.go. R8,
+//     the coverage of the fork's manifest, and the pin that the shard script
+//     still honors the override the sixth edit sets, are
+//     fork_proxied_manifest_pin_test.go (be-jvluf7 section 4).
+//
+// Those two source files are carried in the tree, not read from git history:
+// scripts/testdata/fork-heavy-tiers holds each one byte for byte as `git show
+// forkHeavyBase:.github/workflows/<name>` prints it, and forkHeavySourceSHA256
+// pins its digest. So the lift comparison runs, and can fail, in a shallow
+// clone, in a source archive with no .git and in scripts_test's runfiles alike,
+// and no pin here skips for want of history (be-sj4myt, the rework of W1).
+//
+// Criteria 4 and 5 are runs, not pins, and nothing in this file stands in for
+// them: the three-row table of ruling be-bg8llq section 3.5 (upstream's scripts
+// package, whose workflow sweeps are bazel_policy_test.go, ci_f7c_advisory_test.go,
+// pull_dolt_image_test.go and check_doc_freshness_test.go, run in a throwaway
+// worktree at upstream main without the lifted file, with it, and with it plus
+// the one-entry patch of section 3.1), the applicable Bazel gates, and the fork
+// pull request that runs the lifted workflow with its aggregator green at the
+// exact reviewed head.
+//
+// Every pin here asserts a pre-sync shape, so each is gone or re-pointed in the
+// sync pull request (ruling section 11). When rbe-fork opens to vb and the
+// workflow is retired, delete the workflow, this file, its line in
+// scripts/BUILD.bazel, the fixtures under scripts/testdata/fork-heavy-tiers,
+// scripts/ci/fork-proxied-cmd-shards.txt with scripts/fork_proxied_manifest_pin_test.go
+// and its entries in go_test_sources_test (be-jvluf7 section 11.2: the sixth
+// edit goes with the workflow, and nothing reads the split any more) and
+// the "fork-heavy-tiers.yml": 3 entry, with its comment, that W4 adds to
+// scripts/pull_dolt_image_test.go after the sync (be-bg8llq sections 3.1 and
+// 4.4), together. A retirement that leaves that entry behind fails nothing,
+// which is why it is on this list.
+
+const (
+	forkHeavyTiersWorkflow   = "fork-heavy-tiers.yml"
+	forkHeavyTiersAggregator = "Fork Heavy Tiers / Required"
+	forkHeavyNamePrefix      = "Fork Heavy "
+	forkHeavyCheckout        = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+
+	// vb/integration when W1 was cut: the commit whose pr-risk.yml and
+	// proxied-local-smoke.yml the workflow was lifted from. The table below is a
+	// table of facts about those two files, which this package carries as
+	// fixtures named after the commit (forkHeavySourceJobs) and never asks git for.
+	forkHeavyBase = "356275a13290064fe903ace31984c14d1b9f7ad4"
+
+	// Section 3.4: 58 matrix legs and three single jobs.
+	forkHeavyLegs = 61
+)
+
+// forkHeavyJob is one lifted job as it stands at forkHeavyBase.
+type forkHeavyJob struct {
+	id         string
+	source     string         // the workflow at forkHeavyBase that holds the job
+	name       string         // its name: there, before the prefix
+	needsBuild bool           // the lift leaves needs: [build-embedded]; otherwise none
+	timeout    int            // timeout-minutes, 0 for unset
+	matrix     map[string]any // strategy.matrix, nil for a job that has none
+	steps      []string       // the lifted job's step labels in order: the name, else the uses
+}
+
+var forkHeavyJobs = []forkHeavyJob{
+	{
+		id: "build-embedded", source: "pr-risk.yml", name: "Build (Embedded Dolt)",
+		steps: []string{
+			forkHeavyCheckout, "Set up Go", "Restore Go module cache",
+			"Restore race Go build cache", "Restore non-race Go build cache",
+			"Build embedded bd binary", "Build embedded storage test binary",
+			"Build embedded cmd test binary", "Build proxied bd subprocess binary",
+			"Build server Dolt conformance test binary", "Upload binaries",
+		},
+	},
+	{
+		id: "test-embedded-storage", source: "pr-risk.yml",
+		name:       "Test (Embedded Dolt Storage ${{ matrix.shard }}/${{ strategy.job-total }})",
+		needsBuild: true, timeout: 25,
+		matrix: map[string]any{"shard": forkHeavyShards(5)},
+		steps:  []string{forkHeavyCheckout, "Download binaries", "Fix permissions", "Configure Git", "Test"},
+	},
+	{
+		id: "test-embedded-conformance", source: "pr-risk.yml",
+		name:       "Test (Embedded Dolt Conformance - ${{ matrix.partition }})",
+		needsBuild: true, timeout: 35,
+		matrix: map[string]any{"partition": []any{"core", "audit"}},
+		steps: []string{
+			forkHeavyCheckout, "Download binaries", "Fix permissions", "Configure Git",
+			"Test core conformance", "Test audit conformance",
+		},
+	},
+	{
+		id: "test-embedded-cmd", source: "pr-risk.yml",
+		name:       "Test (Embedded Dolt Cmd ${{ matrix.shard }}/${{ strategy.job-total }})",
+		needsBuild: true,
+		matrix:     map[string]any{"shard": forkHeavyShards(20)},
+		steps:      []string{forkHeavyCheckout, "Download binaries", "Fix permissions", "Configure Git", "Test"},
+	},
+	{
+		id: "test-proxied-cmd", source: "pr-risk.yml",
+		name:       "Test (Proxied Dolt Cmd ${{ matrix.shard }}/${{ strategy.job-total }})",
+		needsBuild: true, timeout: 30,
+		matrix: map[string]any{"shard": forkHeavyShards(15)},
+		steps: []string{
+			forkHeavyCheckout, "Download binaries", "Fix permissions", "Install Dolt CLI",
+			"Configure Git and Dolt identity", "Pull Dolt sql-server image", "Test proxied-server cmd shard",
+		},
+	},
+	{
+		id: "test-server-storage", source: "pr-risk.yml", name: "Test (Server Dolt Conformance)",
+		needsBuild: true, timeout: 20,
+		steps: []string{
+			forkHeavyCheckout, "Download binaries", "Fix permissions", "Configure Git",
+			"Install Dolt", "Configure Dolt", "Pull Dolt sql-server image", "Test",
+		},
+	},
+	{
+		id: "test-server-storage-full", source: "pr-risk.yml",
+		name:       "Test (Server Dolt Full Suite ${{ matrix.shard }}/${{ strategy.job-total }})",
+		needsBuild: true, timeout: 20,
+		matrix: map[string]any{"shard": forkHeavyShards(16)},
+		steps: []string{
+			forkHeavyCheckout, "Download binaries", "Fix permissions", "Configure Git",
+			"Install Dolt", "Configure Dolt", "Pull Dolt sql-server image", "Test",
+		},
+	},
+	{
+		id: "managed-local-smoke", source: "proxied-local-smoke.yml",
+		name: "Managed-local proxied lifecycle (Linux, offline)", timeout: 25,
+		// Six of the source's eight steps: edit 5 cuts the cache unit.
+		steps: []string{
+			forkHeavyCheckout, "Set up Go", "Install pinned Dolt CLI",
+			"Build bd and compile the test binary (online)",
+			"Assert the managed-local lifecycle tests are compiled in",
+			"Run managed-local lifecycle lane offline (loopback-only netns)",
+		},
+	},
+}
+
+// Edit 5, ruled in be-bg8llq section 2: managed-local-smoke loses its
+// Blacksmith-only cache unit, these two steps and the comment above them. The
+// YAML oracle sees the steps; TestForkHeavyTiersNamesNothingTheRulingBars sees
+// the comment. No other job has a step by either name.
+var forkHeavyDroppedSteps = []string{"Compute cache date", "Restore Blacksmith setup-go cache"}
+
+// Edit 6, ruled in be-jvluf7 section 3.5: the proxied lane reads the fork's own
+// 15-shard split and not upstream's manifest, through one env entry on the shard
+// step of test-proxied-cmd, at exactly one site. Nothing else in the workflow
+// names the variable. proxied-test-shard.sh has to honor it
+// (TestForkProxiedShardScriptReadsTheManifestOverride in
+// fork_proxied_manifest_pin_test.go holds it to that), and the helper-path scan
+// below reads this value, so it also proves the manifest file exists.
+const (
+	forkHeavyManifestJob  = "test-proxied-cmd"
+	forkHeavyManifestStep = "Test proxied-server cmd shard"
+	forkHeavyManifestEnv  = "BEADS_TEST_SHARD_MANIFEST"
+	forkHeavyManifestPath = "scripts/ci/fork-proxied-cmd-shards.txt"
+)
+
+// The keys a lifted job may have, all of which the source jobs have too.
+var forkHeavyJobKeys = []string{"name", "needs", "runs-on", "timeout-minutes", "strategy", "env", "steps"}
+
+func forkHeavyShards(n int) []any {
+	shards := make([]any, n)
+	for i := range shards {
+		shards[i] = i + 1
+	}
+	return shards
+}
+
+func forkHeavyJobIDs() []string {
+	ids := make([]string, 0, len(forkHeavyJobs))
+	for _, job := range forkHeavyJobs {
+		ids = append(ids, job.id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// forkHeavyRead returns the workflow's text. The first thing every pin does, so
+// that until W1 lands each one fails for the same stated reason.
+func forkHeavyRead(t *testing.T) []byte {
+	t.Helper()
+	path := filepath.Join(sourceRepoRoot(t), ".github", "workflows", forkHeavyTiersWorkflow)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%s is missing: W1 (be-fxkoxb, ruling be-4y7b5s section 3.4) adds it: %v", forkHeavyTiersWorkflow, err)
+	}
+	return data
+}
+
+func forkHeavyWorkflow(t *testing.T) ciWorkflow {
+	t.Helper()
+	forkHeavyRead(t)
+	return readCIWorkflow(t, forkHeavyTiersWorkflow)
+}
+
+// forkHeavyRawJobs is the workflow's jobs as plain YAML data, which is the form
+// the lift is compared in.
+func forkHeavyRawJobs(t *testing.T) map[string]map[string]any {
+	t.Helper()
+	var doc struct {
+		Jobs map[string]map[string]any `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(forkHeavyRead(t), &doc); err != nil {
+		t.Fatalf("parse %s: %v", forkHeavyTiersWorkflow, err)
+	}
+	return doc.Jobs
+}
+
+// forkHeavyAggregator finds the all-success job by its name: the ruling fixes
+// the name and the semantics, not the job id.
+func forkHeavyAggregator(t *testing.T, wf ciWorkflow) (string, ciWorkflowJob) {
+	t.Helper()
+	var ids []string
+	for id, job := range wf.Jobs {
+		if job.Name == forkHeavyTiersAggregator {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) != 1 {
+		t.Fatalf("%d jobs in %s are named %q (%v), want exactly 1: the aggregator", len(ids), forkHeavyTiersWorkflow, forkHeavyTiersAggregator, ids)
+	}
+	return ids[0], wf.Jobs[ids[0]]
+}
+
+// forkHeavyIf normalizes a job or step condition: the ${{ }} wrapper is
+// optional in GitHub's syntax.
+func forkHeavyIf(condition string) string {
+	condition = strings.TrimSpace(condition)
+	if strings.HasPrefix(condition, "${{") && strings.HasSuffix(condition, "}}") {
+		condition = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(condition, "${{"), "}}"))
+	}
+	return condition
+}
+
+// forkHeavyNeeds reads a needs: value, a job id or a list of them, as a sorted
+// set.
+func forkHeavyNeeds(value any) []string {
+	var needs []string
+	switch v := value.(type) {
+	case nil:
+	case string:
+		needs = []string{v}
+	case []any:
+		for _, item := range v {
+			needs = append(needs, fmt.Sprint(item))
+		}
+	default:
+		needs = []string{fmt.Sprint(v)}
+	}
+	sort.Strings(needs)
+	return needs
+}
+
+func forkHeavyStepLabel(step any) string {
+	fields, _ := step.(map[string]any)
+	if name, ok := fields["name"].(string); ok {
+		return name
+	}
+	uses, _ := fields["uses"].(string)
+	return uses
+}
+
+func forkHeavyStepLabels(job map[string]any) []string {
+	steps, _ := job["steps"].([]any)
+	labels := make([]string, 0, len(steps))
+	for _, step := range steps {
+		labels = append(labels, forkHeavyStepLabel(step))
+	}
+	return labels
+}
+
+// forkHeavyKeptSteps is a source job's steps less the ones edit 5 drops.
+func forkHeavyKeptSteps(steps []any) []any {
+	kept := make([]any, 0, len(steps))
+	for _, step := range steps {
+		if !slices.Contains(forkHeavyDroppedSteps, forkHeavyStepLabel(step)) {
+			kept = append(kept, step)
+		}
+	}
+	return kept
+}
+
+// forkHeavyWithManifest applies edit 6 to a job's steps and returns how many
+// steps it set the entry on, which is the number of steps named
+// forkHeavyManifestStep. The step and its env are copied before the key goes in:
+// the parsed source is shared with every other lift that reads it, so an edit
+// made in place would reach the source itself.
+func forkHeavyWithManifest(steps []any) ([]any, int) {
+	out := make([]any, len(steps))
+	sites := 0
+	for i, step := range steps {
+		out[i] = step
+		fields, ok := step.(map[string]any)
+		if !ok || forkHeavyStepLabel(step) != forkHeavyManifestStep {
+			continue
+		}
+		sites++
+		stepCopy := make(map[string]any, len(fields)+1)
+		for key, value := range fields {
+			stepCopy[key] = value
+		}
+		env := map[string]any{}
+		if old, ok := fields["env"].(map[string]any); ok {
+			for key, value := range old {
+				env[key] = value
+			}
+		}
+		env[forkHeavyManifestEnv] = forkHeavyManifestPath
+		stepCopy["env"] = env
+		out[i] = stepCopy
+	}
+	return out, sites
+}
+
+// forkHeavyManifestSites lists every place in the lifted workflow's jobs that sets
+// forkHeavyManifestEnv: a job's env or a step's env. Edit 6 has exactly one.
+func forkHeavyManifestSites(jobs map[string]map[string]any) []string {
+	ids := make([]string, 0, len(jobs))
+	for id := range jobs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var sites []string
+	for _, id := range ids {
+		if env, ok := jobs[id]["env"].(map[string]any); ok {
+			if _, set := env[forkHeavyManifestEnv]; set {
+				sites = append(sites, fmt.Sprintf("job %s (job-level env)", id))
+			}
+		}
+		steps, _ := jobs[id]["steps"].([]any)
+		for _, step := range steps {
+			fields, _ := step.(map[string]any)
+			if env, ok := fields["env"].(map[string]any); ok {
+				if _, set := env[forkHeavyManifestEnv]; set {
+					sites = append(sites, fmt.Sprintf("job %s, step %q", id, forkHeavyStepLabel(step)))
+				}
+			}
+		}
+	}
+	return sites
+}
+
+func forkHeavyShow(value any) string {
+	text := fmt.Sprintf("%v", value)
+	if len(text) > 120 {
+		text = text[:120] + "..."
+	}
+	return text
+}
+
+// forkHeavyDiff lists, one line per leaf, where got departs from want.
+func forkHeavyDiff(path string, want, got any) []string {
+	switch w := want.(type) {
+	case map[string]any:
+		g, ok := got.(map[string]any)
+		if !ok {
+			return []string{fmt.Sprintf("%s: want a mapping, got %s", path, forkHeavyShow(got))}
+		}
+		keys := map[string]bool{}
+		for key := range w {
+			keys[key] = true
+		}
+		for key := range g {
+			keys[key] = true
+		}
+		var diffs []string
+		for _, key := range sortedKeys(keys) {
+			wantValue, inWant := w[key]
+			gotValue, inGot := g[key]
+			switch {
+			case !inGot:
+				diffs = append(diffs, fmt.Sprintf("%s.%s: missing, want %s", path, key, forkHeavyShow(wantValue)))
+			case !inWant:
+				diffs = append(diffs, fmt.Sprintf("%s.%s: unexpected %s", path, key, forkHeavyShow(gotValue)))
+			default:
+				diffs = append(diffs, forkHeavyDiff(path+"."+key, wantValue, gotValue)...)
+			}
+		}
+		return diffs
+	case []any:
+		g, ok := got.([]any)
+		if !ok {
+			return []string{fmt.Sprintf("%s: want a list, got %s", path, forkHeavyShow(got))}
+		}
+		var diffs []string
+		if len(g) != len(w) {
+			diffs = append(diffs, fmt.Sprintf("%s: %d items, want %d", path, len(g), len(w)))
+		}
+		for i := 0; i < len(w) && i < len(g); i++ {
+			diffs = append(diffs, forkHeavyDiff(fmt.Sprintf("%s[%d]", path, i), w[i], g[i])...)
+		}
+		return diffs
+	}
+	if reflect.DeepEqual(want, got) {
+		return nil
+	}
+	return []string{fmt.Sprintf("%s: want %s, got %s", path, forkHeavyShow(want), forkHeavyShow(got))}
+}
+
+// Criterion 1. The file holds the eight lifted jobs and one aggregator, and the
+// aggregator needs every one of the eight.
+func TestForkHeavyTiersJobSetAndAggregator(t *testing.T) {
+	wf := forkHeavyWorkflow(t)
+	aggregatorID, aggregator := forkHeavyAggregator(t, wf)
+	want := forkHeavyJobIDs()
+
+	var got []string
+	for id := range wf.Jobs {
+		if id != aggregatorID {
+			got = append(got, id)
+		}
+	}
+	sort.Strings(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("%s jobs besides the aggregator = %v, want exactly %v (section 3.4: the eight lifted job ids, no more)", forkHeavyTiersWorkflow, got, want)
+	}
+
+	needs := append([]string(nil), aggregator.Needs...)
+	sort.Strings(needs)
+	if !slices.Equal(needs, want) {
+		t.Errorf("aggregator %s needs %v, want every other job in the file: %v", aggregatorID, needs, want)
+	}
+	if forkHeavyIf(aggregator.If) != "always()" {
+		t.Errorf("aggregator %s has if: %q, want always() (a skipped or failed need must reach the aggregator, not skip it)", aggregatorID, aggregator.If)
+	}
+	if aggregator.ContinueOnError {
+		t.Errorf("aggregator %s sets continue-on-error; its failure is the signal", aggregatorID)
+	}
+	for i, step := range aggregator.Steps {
+		if step.ContinueOnError != nil {
+			t.Errorf("aggregator %s step %d (%q) sets continue-on-error; its failure is the signal", aggregatorID, i, step.Name)
+		}
+	}
+	if !forkHeavyHostedRunnerRe.MatchString(aggregator.RunsOn) {
+		t.Errorf("aggregator %s runs-on = %q, want a GitHub-hosted ubuntu runner like every other job in the file (section 5.1 rule 4)", aggregatorID, aggregator.RunsOn)
+	}
+}
+
+var (
+	forkHeavyHostedRunnerRe = regexp.MustCompile(`^ubuntu-(latest|[0-9]{2}\.[0-9]{2})$`)
+	forkHeavyNeedsResultRe  = regexp.MustCompile(`\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}`)
+	forkHeavyExprRe         = regexp.MustCompile(`\$\{\{.*?\}\}`)
+)
+
+// forkHeavyEval resolves ${{ needs.<job>.result }}, the one expression the
+// aggregator simulation understands. Any other expression fails the test, so the
+// simulation cannot silently drift from the workflow (runPRGateStep does the
+// same for pr.yml's gate).
+func forkHeavyEval(t *testing.T, where, text string, results map[string]string) string {
+	t.Helper()
+	text = forkHeavyNeedsResultRe.ReplaceAllStringFunc(text, func(expr string) string {
+		id := forkHeavyNeedsResultRe.FindStringSubmatch(expr)[1]
+		result, ok := results[id]
+		if !ok {
+			t.Fatalf("%s reads needs.%s.result, and %s is not a job in this file", where, id, id)
+		}
+		return result
+	})
+	if expr := forkHeavyExprRe.FindString(text); expr != "" {
+		t.Fatalf("%s uses %s: the aggregator may read only ${{ needs.<job>.result }}, the one expression the simulation evaluates (pr-risk.yml's ci-gate is the shape to follow)", where, expr)
+	}
+	return text
+}
+
+// forkHeavyRunAggregator runs the aggregator's own run steps, under GitHub's
+// bash flags, with every need at the result the scenario gives it, and reports
+// whether the job would pass. Steps that use an action (the checkout) are
+// skipped: the files are already here.
+func forkHeavyRunAggregator(t *testing.T, bash, id string, job ciWorkflowJob, results map[string]string) (bool, string) {
+	t.Helper()
+	root := sourceRepoRoot(t)
+	var log strings.Builder
+	ran := 0
+	for i, step := range job.Steps {
+		where := fmt.Sprintf("aggregator %s step %d (%q)", id, i, step.Name)
+		if step.Uses != "" {
+			continue
+		}
+		switch forkHeavyIf(step.If) {
+		case "", "always()":
+		default:
+			t.Fatalf("%s has if: %s; the aggregator's steps may be unconditional or always() only", where, step.If)
+		}
+		flags := []string{"--noprofile", "--norc", "-e"}
+		switch step.Shell {
+		case "":
+		case "bash":
+			flags = []string{"--noprofile", "--norc", "-eo", "pipefail"}
+		default:
+			t.Fatalf("%s has shell: %s; the aggregator's steps run under bash", where, step.Shell)
+		}
+		env := []string{"PATH=" + os.Getenv("PATH"), "GITHUB_WORKSPACE=" + root}
+		for _, vars := range []map[string]string{job.Env, step.Env} {
+			for key, value := range vars {
+				env = append(env, key+"="+forkHeavyEval(t, where+" env "+key, value, results))
+			}
+		}
+		cmd := exec.Command(bash, append(flags, "-c", forkHeavyEval(t, where+" run", step.Run, results))...)
+		cmd.Dir = root
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		log.Write(out)
+		ran++
+		if err != nil {
+			return false, log.String()
+		}
+	}
+	if ran == 0 {
+		t.Fatalf("aggregator %s has no run step, so nothing evaluates its needs", id)
+	}
+	return true, log.String()
+}
+
+// Criterion 1. The aggregator fails on any non-success need, skipped included:
+// the only way to a green Fork Heavy Tiers / Required is that all eight jobs
+// ran and passed. A skipped heavy tier is exactly the silent gap this workflow
+// exists to close.
+func TestForkHeavyTiersAggregatorFailsUnlessEveryNeedSucceeded(t *testing.T) {
+	bash := requireHostTool(t, "bash")
+	aggregatorID, aggregator := forkHeavyAggregator(t, forkHeavyWorkflow(t))
+	ids := forkHeavyJobIDs()
+	scenario := func(id, result string) map[string]string {
+		results := map[string]string{}
+		for _, need := range ids {
+			results[need] = "success"
+		}
+		if id != "" {
+			results[id] = result
+		}
+		return results
+	}
+
+	if ok, out := forkHeavyRunAggregator(t, bash, aggregatorID, aggregator, scenario("", "")); !ok {
+		t.Errorf("the aggregator fails although all %d jobs succeeded:\n%s", len(ids), out)
+	}
+	for _, id := range ids {
+		for _, result := range []string{"failure", "cancelled", "skipped"} {
+			if ok, out := forkHeavyRunAggregator(t, bash, aggregatorID, aggregator, scenario(id, result)); ok {
+				t.Errorf("the aggregator passes when needs.%s.result is %s; it must fail unless every job's result is exactly success (skipped is not acceptable):\n%s", id, result, out)
+			}
+		}
+	}
+}
+
+// Criterion 2, the shape. The workflow runs pull-request code, so like
+// fork-macos.yml it may only run unprivileged: triggers that carry no secrets, a
+// read-only token, no job that widens its own permissions. It is the integration
+// pull requests' lane, a path filter on it would let a heavy tier go unrun, and
+// merge_group is out because vb has no merge queue (ruling section 3.4: if it
+// ever enables one, re-rule).
+func TestForkHeavyTiersRunsUnprivilegedOnIntegrationPullRequests(t *testing.T) {
+	rel := ".github/workflows/" + forkHeavyTiersWorkflow
+	var wf struct {
+		On          map[string]any    `yaml:"on"`
+		Permissions map[string]any    `yaml:"permissions"`
+		Env         map[string]string `yaml:"env"`
+		Concurrency map[string]any    `yaml:"concurrency"`
+		Jobs        map[string]struct {
+			Permissions any `yaml:"permissions"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(forkHeavyRead(t), &wf); err != nil {
+		t.Fatalf("parse %s: %v", rel, err)
+	}
+
+	wantOn := map[string]any{"pull_request": map[string]any{"branches": []any{"integration"}}, "workflow_dispatch": nil}
+	if !reflect.DeepEqual(wf.On, wantOn) {
+		t.Errorf("%s triggers = %v, want %v (no path filter, no merge_group, never pull_request_target or workflow_run: it runs pull-request code)", rel, wf.On, wantOn)
+	}
+	if !reflect.DeepEqual(wf.Permissions, map[string]any{"contents": "read"}) {
+		t.Errorf("%s permissions = %v, want exactly contents: read", rel, wf.Permissions)
+	}
+	wantEnv := map[string]string{"BD_DISABLE_METRICS": "1", "BD_DISABLE_EVENT_FLUSH": "1"}
+	if !reflect.DeepEqual(wf.Env, wantEnv) {
+		t.Errorf("%s env = %v, want %v (the workflow-level env the lifted jobs rely on, as in fork-macos.yml)", rel, wf.Env, wantEnv)
+	}
+	wantConcurrency := map[string]any{
+		"group":              "${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}",
+		"cancel-in-progress": true,
+	}
+	if !reflect.DeepEqual(wf.Concurrency, wantConcurrency) {
+		t.Errorf("%s concurrency = %v, want %v", rel, wf.Concurrency, wantConcurrency)
+	}
+	for id, job := range wf.Jobs {
+		if job.Permissions != nil {
+			t.Errorf("%s job %s sets its own permissions %v", rel, id, job.Permissions)
+		}
+	}
+}
+
+// Text the ruling bars from the file. Upstream's sweeps read every workflow file
+// as text and fork-macos.yml already passes them, so this file has to as well
+// (section 3.4); the same words are barred from all three fork-owned workflows
+// by R6 (section 5.1 rule 4), which says "NO Blacksmith text", not "no
+// Blacksmith runner". Comments count.
+var forkHeavyBarredText = []string{
+	"golangci", "blacksmith", "secrets.", "run-id", "workflow_run", "rbe_", "pull_request_target",
+}
+
+var forkHeavyMakeRe = regexp.MustCompile(`\bmake\b`)
+
+// forkHeavyLine is one line of a scalar value: a run script, a name, a condition.
+type forkHeavyLine struct{ at, text string }
+
+// forkHeavyLines returns the workflow's values line by line, YAML comments and
+// shell comment lines left out: what the runner would act on.
+func forkHeavyLines(t *testing.T) []forkHeavyLine {
+	t.Helper()
+	forkHeavyRead(t)
+	var lines []forkHeavyLine
+	walkYAML(readYAMLNode(t, ".github/workflows/"+forkHeavyTiersWorkflow), "", func(path string, key bool, value string) {
+		if key {
+			return
+		}
+		for _, line := range strings.Split(value, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+				lines = append(lines, forkHeavyLine{path, line})
+			}
+		}
+	})
+	return lines
+}
+
+func TestForkHeavyTiersNamesNothingTheRulingBars(t *testing.T) {
+	text := strings.ToLower(string(forkHeavyRead(t)))
+	for _, barred := range forkHeavyBarredText {
+		if i := strings.Index(text, barred); i >= 0 {
+			t.Errorf("%s:%d names %q; section 3.4 and R6 (section 5.1 rule 4) bar it from the file, comments included", forkHeavyTiersWorkflow, strings.Count(text[:i], "\n")+1, barred)
+		}
+	}
+	for _, line := range forkHeavyLines(t) {
+		if forkHeavyMakeRe.MatchString(line.text) {
+			t.Errorf("%s %s calls make (%q); section 3.4 bars a make call here, and upstream's TestWorkflowsNameTheirTestEngine flags the ones that run the primary engine", forkHeavyTiersWorkflow, line.at, strings.TrimSpace(line.text))
+		}
+	}
+}
+
+// A path the workflow names under .github/scripts, scripts or tools, ignoring
+// matches inside a longer path (internal/scripts/..., $WORKSPACE/scripts/...).
+var forkHeavyHelperPathRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_./-])(?:\./)?((?:\.github/scripts|scripts|tools)/[A-Za-z0-9_./-]+)`)
+
+// The helpers the lifted jobs run, and the fork's shard manifest that edit 6
+// hands the proxied shard script. If the scan below stops finding one, it has
+// stopped reading the file and the existence check is passing for nothing.
+var forkHeavyKnownHelpers = []string{
+	".github/scripts/embedded-storage-test-shard.sh",
+	".github/scripts/embedded-test-shard.sh",
+	".github/scripts/proxied-test-shard.sh",
+	".github/scripts/server-storage-test-shard.sh",
+	forkHeavyManifestPath,
+	"scripts/ci/install-dolt.sh",
+	"scripts/ci/pull-dolt-image.sh",
+}
+
+// Criterion 2 and the self-protection pin of section 3.4: every local helper
+// the file names exists. If upstream deletes or moves one, this fails loudly
+// instead of the lane rotting until a pull request runs it.
+func TestForkHeavyTiersNamesOnlyHelpersThatExist(t *testing.T) {
+	root := sourceRepoRoot(t)
+	seen := map[string]string{}
+	for _, line := range forkHeavyLines(t) {
+		for _, match := range forkHeavyHelperPathRe.FindAllStringSubmatch(line.text, -1) {
+			path := strings.TrimRight(match[1], ".,;:")
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = line.at
+			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
+				t.Errorf("%s %s runs %s, which is not in the tree: if upstream moved or deleted it, follow it here in the same change (ruling section 3.4): %v", forkHeavyTiersWorkflow, line.at, path, err)
+			}
+		}
+	}
+	for _, path := range forkHeavyKnownHelpers {
+		if _, ok := seen[path]; !ok {
+			t.Errorf("%s does not name %s, a helper its lifted jobs run (or the scan no longer finds it)", forkHeavyTiersWorkflow, path)
+		}
+	}
+}
+
+// Criterion 2, the lifted shape from the table in this file: each job keeps the
+// ids, names, needs, timeouts, matrices and steps of its source, less
+// managed-local-smoke's two cache steps (edit 5, be-bg8llq), so a retype or a
+// trim shows against facts written down here (TestForkHeavyTiersLiftMatchesSourceBlobs
+// then compares every byte of the values with the source fixtures).
+func TestForkHeavyTiersJobsKeepTheirShape(t *testing.T) {
+	jobs := forkHeavyRawJobs(t)
+	legs := 0
+	for _, want := range forkHeavyJobs {
+		job, ok := jobs[want.id]
+		if !ok {
+			t.Errorf("job %s is missing", want.id)
+			continue
+		}
+		if wantName := forkHeavyNamePrefix + want.name; job["name"] != wantName {
+			t.Errorf("job %s: name = %q, want %q (the lift prefixes %q, edit 1)", want.id, job["name"], wantName, forkHeavyNamePrefix)
+		}
+		var wantNeeds []string
+		if want.needsBuild {
+			wantNeeds = []string{"build-embedded"}
+		}
+		if gotNeeds := forkHeavyNeeds(job["needs"]); !slices.Equal(gotNeeds, wantNeeds) {
+			t.Errorf("job %s: needs = %v, want %v (edit 2: build-embedded for the test jobs, none for build-embedded and managed-local-smoke)", want.id, gotNeeds, wantNeeds)
+		}
+		if _, ok := job["if"]; ok {
+			t.Errorf("job %s: still has its tier if: %v (edit 3 drops it: the workflow runs everything)", want.id, job["if"])
+		}
+		if job["runs-on"] != "ubuntu-latest" {
+			t.Errorf("job %s: runs-on = %v, want ubuntu-latest (edit 4)", want.id, job["runs-on"])
+		}
+		for key := range job {
+			if !slices.Contains(forkHeavyJobKeys, key) && key != "if" {
+				t.Errorf("job %s: has %s, which its source does not", want.id, key)
+			}
+		}
+		gotTimeout, set := job["timeout-minutes"]
+		if want.timeout == 0 && set || want.timeout != 0 && gotTimeout != want.timeout {
+			t.Errorf("job %s: timeout-minutes = %v, want %d (0 is unset); timeouts never loosen", want.id, gotTimeout, want.timeout)
+		}
+		if want.matrix == nil {
+			if job["strategy"] != nil {
+				t.Errorf("job %s: strategy = %v, want none", want.id, job["strategy"])
+			}
+		} else if wantStrategy := (map[string]any{"fail-fast": false, "matrix": want.matrix}); !reflect.DeepEqual(job["strategy"], wantStrategy) {
+			t.Errorf("job %s: strategy = %v, want %v", want.id, job["strategy"], wantStrategy)
+		}
+		if gotSteps := forkHeavyStepLabels(job); !slices.Equal(gotSteps, want.steps) {
+			t.Errorf("job %s: steps = %q, want %q (step names stay verbatim; managed-local-smoke alone loses its cache unit, edit 5 of be-bg8llq, and keeps six)", want.id, gotSteps, want.steps)
+		}
+
+		count := 1
+		if strategy, ok := job["strategy"].(map[string]any); ok {
+			if matrix, ok := strategy["matrix"].(map[string]any); ok {
+				for _, values := range matrix {
+					if list, ok := values.([]any); ok {
+						count *= len(list)
+					}
+				}
+			}
+		}
+		legs += count
+	}
+	if legs != forkHeavyLegs {
+		t.Errorf("the lifted jobs expand to %d legs, want %d (section 3.4: all of them, on every integration pull request)", legs, forkHeavyLegs)
+	}
+}
+
+// The lift's source, carried in the tree. Each file is what `git show
+// forkHeavyBase:.github/workflows/<name>` prints, byte for byte, under
+// forkHeavySourceDir (a directory scripts_test's runfiles hold), named after
+// forkHeavyBase so that moving the base moves the path. The names do not end in
+// .yml on purpose: they are not workflows, and nothing that sweeps YAML files or
+// .github/workflows picks them up. The digests are the integrity check, because
+// the comparison is only as good as its oracle: a fixture that is trimmed,
+// reworded or swapped for the lifted workflow itself would otherwise make the
+// lift compare equal to a source that is not the source. The git blob ids
+// (pr-risk.yml 780c31af062283b15b368908f679687cc578c0ba, 33670 bytes;
+// proxied-local-smoke.yml c3a30691e236899bdc4c56f6a130e57d1ef04c8c, 8282 bytes)
+// are for a reader with history; the test needs only the SHA-256.
+const forkHeavySourceDir = "scripts/testdata/fork-heavy-tiers"
+
+var forkHeavySourceSHA256 = map[string]string{
+	"pr-risk.yml":             "9a57dcfe6dc61f81a98f21b1aadc9f4748f4dd49189ec1e5538b06bb363976ce",
+	"proxied-local-smoke.yml": "df1edf589a77cdd75e9450f0899558cbadee5fc48040a8e65abe3fd6a016d574",
+}
+
+// forkHeavySourceJobs returns the jobs of one lift-source workflow as plain YAML
+// data, once the fixture is proved to be that file. A fixture that is missing or
+// differs fails the test: it never skips it, and it is never re-pinned silently.
+func forkHeavySourceJobs(t *testing.T, file string) map[string]any {
+	t.Helper()
+	want, ok := forkHeavySourceSHA256[file]
+	if !ok {
+		t.Fatalf("no SHA-256 is pinned for the lift source %s: forkHeavySourceSHA256 has one entry per workflow file that forkHeavyJobs names as a source", file)
+	}
+	rel := forkHeavySourceDir + "/" + file + "." + forkHeavyBase[:12]
+	regenerate := fmt.Sprintf("git show %s:.github/workflows/%s > %s", forkHeavyBase, file, rel)
+	data, err := os.ReadFile(filepath.Join(sourceRepoRoot(t), filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("the lift's source fixture %s cannot be read, so the lift cannot be compared with its source (git history is not consulted): %v\nrestore it from a clone that has %s: %s", rel, err, forkHeavyBase[:12], regenerate)
+	}
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("%s has SHA-256 %s (%d bytes), want %s: it is not %s:.github/workflows/%s byte for byte.\nregenerate it with: %s\nnever hand-edit it, and never re-pin a digest to match a changed fixture; moving forkHeavyBase means re-vendoring both fixtures and re-pinning both digests in one commit", rel, got, len(data), want, forkHeavyBase[:12], file, regenerate)
+	}
+	var doc struct {
+		Jobs map[string]any `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parse %s: %v", rel, err)
+	}
+	return doc.Jobs
+}
+
+// forkHeavyLift applies the six ruled edits to a source job: the name gains the
+// prefix, needs go (the caller compares them as a set), the tier if: goes, a
+// Blacksmith runs-on becomes ubuntu-latest, the steps of forkHeavyDroppedSteps
+// go (be-bg8llq; the comment above them is not YAML, so it is not here), and,
+// for forkHeavyManifestJob alone, its forkHeavyManifestStep gains the
+// forkHeavyManifestEnv entry (be-jvluf7 section 3.5). The second result is how many
+// steps edit 6 reached, which the caller counts.
+func forkHeavyLift(t *testing.T, id string, source map[string]any) (map[string]any, int) {
+	t.Helper()
+	job := map[string]any{}
+	for key, value := range source {
+		job[key] = value
+	}
+	name, ok := job["name"].(string)
+	if !ok {
+		t.Fatalf("source job %s has name %v, want a string", id, job["name"])
+	}
+	job["name"] = forkHeavyNamePrefix + name
+	delete(job, "needs")
+	delete(job, "if")
+	if runsOn, ok := job["runs-on"].(string); ok && strings.Contains(strings.ToLower(runsOn), "blacksmith") {
+		job["runs-on"] = "ubuntu-latest"
+	}
+	sites := 0
+	if steps, ok := job["steps"].([]any); ok {
+		steps = forkHeavyKeptSteps(steps)
+		if id == forkHeavyManifestJob {
+			steps, sites = forkHeavyWithManifest(steps)
+		}
+		job["steps"] = steps
+	}
+	return job, sites
+}
+
+// Criterion 2, the lift diff. Every lifted job equals its job in the source
+// workflow at forkHeavyBase after the six ruled edits (section 3.4 as amended by
+// be-bg8llq section 2 and be-jvluf7 section 3.5), and nothing else: not a retyped
+// command, a loosened timeout or a reworded step. Edit 5 fires for
+// managed-local-smoke alone and takes exactly the two steps of
+// forkHeavyDroppedSteps, which the check after the loop counts; edit 6 fires for
+// the one "Test proxied-server cmd shard" step of test-proxied-cmd, which the next
+// check counts in the source, and the last check counts again in the workflow: an
+// entry that is missing, or copied to a second step or to a job's env, is not the
+// edit that was ruled. The source is the digest-pinned fixtures
+// (forkHeavySourceJobs), so this pin needs no git history and has no skip: it runs
+// in a shallow clone, in a source archive with no .git and under Bazel, and an
+// altered or missing fixture fails it.
+func TestForkHeavyTiersLiftMatchesSourceBlobs(t *testing.T) {
+	got := forkHeavyRawJobs(t)
+
+	sources := map[string]map[string]any{}
+	sourceJobs := func(file string) map[string]any {
+		if jobs, ok := sources[file]; ok {
+			return jobs
+		}
+		sources[file] = forkHeavySourceJobs(t, file)
+		return sources[file]
+	}
+
+	dropped := map[string]int{}       // job id -> source steps edit 5 takes out of it
+	manifestSites := map[string]int{} // job id -> source steps edit 6 sets the manifest entry on
+	for _, want := range forkHeavyJobs {
+		source, ok := sourceJobs(want.source)[want.id].(map[string]any)
+		if !ok {
+			t.Fatalf("%s at %s has no job %s", want.source, forkHeavyBase, want.id)
+		}
+		lifted, ok := got[want.id]
+		if !ok {
+			t.Errorf("job %s is missing", want.id)
+			continue
+		}
+		var wantNeeds []string
+		if want.needsBuild {
+			wantNeeds = []string{"build-embedded"}
+		}
+		if gotNeeds := forkHeavyNeeds(lifted["needs"]); !slices.Equal(gotNeeds, wantNeeds) {
+			t.Errorf("job %s: needs = %v, want %v", want.id, gotNeeds, wantNeeds)
+		}
+		delete(lifted, "needs")
+
+		expected, sites := forkHeavyLift(t, want.id, source)
+		if diffs := forkHeavyDiff(want.id, expected, lifted); len(diffs) > 0 {
+			t.Errorf("job %s differs from %s:%s at %s by more than the six ruled edits (be-bg8llq, be-jvluf7):\n  %s", want.id, want.source, want.id, forkHeavyBase[:12], strings.Join(diffs, "\n  "))
+		}
+		sourceSteps, _ := source["steps"].([]any)
+		keptSteps, _ := expected["steps"].([]any)
+		if cut := len(sourceSteps) - len(keptSteps); cut > 0 {
+			dropped[want.id] = cut
+		}
+		if sites > 0 {
+			manifestSites[want.id] = sites
+		}
+	}
+	if wantDropped := map[string]int{"managed-local-smoke": len(forkHeavyDroppedSteps)}; !reflect.DeepEqual(dropped, wantDropped) {
+		t.Errorf("edit 5 took steps %v out of the source jobs, want %v: it fires for managed-local-smoke alone and takes exactly %q (be-bg8llq section 2)", dropped, wantDropped, forkHeavyDroppedSteps)
+	}
+	if wantSites := map[string]int{forkHeavyManifestJob: 1}; !reflect.DeepEqual(manifestSites, wantSites) {
+		t.Errorf("edit 6 set %s on steps %v of the source jobs, want %v: it fires for the one %q step of job %s and no other (be-jvluf7 section 3.5)", forkHeavyManifestEnv, manifestSites, wantSites, forkHeavyManifestStep, forkHeavyManifestJob)
+	}
+	wantSite := fmt.Sprintf("job %s, step %q", forkHeavyManifestJob, forkHeavyManifestStep)
+	if sites := forkHeavyManifestSites(got); !slices.Equal(sites, []string{wantSite}) {
+		t.Errorf("%s sets %s at %d site(s) %q, want exactly one, %s: edit 6 gives that step the entry %s: %s and no other job or step has it (be-jvluf7 section 3.5; no site means the edit is not made yet, a second site means the entry was copied)", forkHeavyTiersWorkflow, forkHeavyManifestEnv, len(sites), sites, wantSite, forkHeavyManifestEnv, forkHeavyManifestPath)
+	}
+}
