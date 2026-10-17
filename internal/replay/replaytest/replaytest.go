@@ -183,6 +183,20 @@ var bdBuild struct {
 // headers a macOS runner does not have.
 const bdBuildTags = "gms_pure_go"
 
+// GoBin returns the go command a fixture builds with. Under Bazel that is the
+// registered Go SDK, which a go_test declares as data and names in BEADS_TEST_GO:
+// the go on an executor's PATH may be another release or none, so there is no
+// PATH fallback there, and a target that skipped the wiring fails loudly.
+// Anywhere else it is the go on PATH. A fixture takes go from here instead of
+// naming it, as scripts/host_tool_exec_policy_test.go requires of a test that
+// runs the toolchain.
+func GoBin() (string, error) {
+	if bazeltest.IsBazel() {
+		return bazeltest.RunfileEnv("BEADS_TEST_GO")
+	}
+	return exec.LookPath("go")
+}
+
 // BdBin returns the bd binary the tests run: the prebuilt one a job provides
 // through BEADS_TEST_BD_BINARY, otherwise one built from this tree with the
 // suite's tags. A build happens once per test binary; call Main from TestMain to

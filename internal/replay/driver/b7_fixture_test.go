@@ -69,7 +69,11 @@ func driverCoreBin(t *testing.T) string {
 	root := fixtureRoot(t)
 	shared.mu.Unlock()
 	out := filepath.Join(root, "driver-core")
-	cmd := exec.Command("go", "build", "-tags", bdBuildTags, "-o", out, "./scripts/driver-core")
+	goBin, err := replaytest.GoBin()
+	if err != nil {
+		t.Fatalf("building scripts/driver-core: %v", err)
+	}
+	cmd := exec.Command(goBin, "build", "-tags", bdBuildTags, "-o", out, "./scripts/driver-core")
 	cmd.Dir = findRepoRoot(t)
 	cmd.Env = b7BaseEnv
 	if b, err := cmd.CombinedOutput(); err != nil {

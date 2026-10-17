@@ -301,3 +301,82 @@ func TestBdBinFailsOnAnUnusablePrebuiltBinaryInsteadOfBuilding(t *testing.T) {
 		t.Errorf("go was invoked after the prebuilt failed, want no build: %q", run.goCalls)
 	}
 }
+
+// standInGo writes an executable named go into dir and returns its path. GoBin
+// only resolves a path, so the stand-in is never run.
+func standInGo(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("creating %s: %v", dir, err)
+	}
+	path := filepath.Join(dir, "go")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("writing the go stand-in: %v", err)
+	}
+	return path
+}
+
+// Under Bazel the go a fixture builds with is the runfile BEADS_TEST_GO names,
+// resolved through the runfiles tree like any other declared data.
+func TestGoBinUnderBazelIsTheDeclaredRunfile(t *testing.T) {
+	runfiles := t.TempDir()
+	want := standInGo(t, filepath.Join(runfiles, "go_sdk", "bin"))
+	t.Setenv("TEST_SRCDIR", runfiles)
+	t.Setenv("RUNFILES_DIR", runfiles)
+	t.Setenv("BEADS_TEST_GO", "go_sdk/bin/go")
+
+	got, err := replaytest.GoBin()
+	if err != nil {
+		t.Fatalf("GoBin under Bazel with BEADS_TEST_GO declared: %v", err)
+	}
+	if got != want {
+		t.Errorf("GoBin = %q, want the runfile %q", got, want)
+	}
+}
+
+// The go on PATH is never used under Bazel: a go_test that did not declare the
+// SDK fails, however well a go on PATH would have served.
+func TestGoBinUnderBazelNeverFallsBackToPATH(t *testing.T) {
+	onPath := t.TempDir()
+	standInGo(t, onPath)
+	t.Setenv("PATH", onPath)
+	t.Setenv("TEST_SRCDIR", t.TempDir())
+	t.Setenv("RUNFILES_DIR", "")
+	t.Setenv("BEADS_TEST_GO", "")
+
+	got, err := replaytest.GoBin()
+	if err == nil {
+		t.Fatalf("GoBin under Bazel without BEADS_TEST_GO = %q, want an error", got)
+	}
+	if !strings.Contains(err.Error(), "BEADS_TEST_GO") {
+		t.Errorf("the error does not name BEADS_TEST_GO: %v", err)
+	}
+}
+
+// Anywhere else it is the go on PATH, and BEADS_TEST_GO, which only a go_test
+// sets, is not consulted.
+func TestGoBinOutsideBazelIsTheGoOnPATH(t *testing.T) {
+	onPath := t.TempDir()
+	want := standInGo(t, onPath)
+	t.Setenv("PATH", onPath)
+	t.Setenv("TEST_SRCDIR", "")
+	t.Setenv("BEADS_TEST_GO", filepath.Join(t.TempDir(), "no-such-go"))
+
+	got, err := replaytest.GoBin()
+	if err != nil {
+		t.Fatalf("GoBin outside Bazel with a go on PATH: %v", err)
+	}
+	if got != want {
+		t.Errorf("GoBin = %q, want the go on PATH %q", got, want)
+	}
+}
+
+// With no go on PATH it is an error, not an empty command to run.
+func TestGoBinOutsideBazelFailsWithoutGoOnPATH(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("TEST_SRCDIR", "")
+
+	if got, err := replaytest.GoBin(); err == nil {
+		t.Fatalf("GoBin with no go on PATH = %q, want an error", got)
+	}
+}
