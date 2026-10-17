@@ -37,10 +37,17 @@ import (
 // module. Both share fork_embedded_gate_pin_helpers_test.go, and neither file
 // may use an identifier the other defines.
 
-// shellWords folds line continuations and all whitespace, so a pin compares
-// what the shell reads and not the YAML indentation.
-func shellWords(script string) string {
-	return strings.Join(strings.Fields(strings.ReplaceAll(script, "\\\n", " ")), " ")
+// shellLines keeps the line structure of a script and folds its continuations
+// and its indentation. Two scripts that differ in where a command ends (a
+// newline or a space) are different scripts.
+func shellLines(script string) string {
+	var lines []string
+	for _, line := range strings.Split(strings.ReplaceAll(script, "\\\n", " "), "\n") {
+		if folded := strings.Join(strings.Fields(line), " "); folded != "" {
+			lines = append(lines, folded)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // The doctor-embedded job runs the gated doctor tests with the gate set, and
@@ -73,8 +80,8 @@ func TestForkEmbeddedGatedLane(t *testing.T) {
 go test -tags gms_pure_go -race -count=1 -v -timeout 20m \
   -run '^(` + strings.Join(forkDoctorGatedTests, "|") + `)$' \
   ./cmd/bd/doctor/ 2>&1 | tee "$RUNNER_TEMP/doctor-gated.log"`
-	if got := shellWords(test.Run); got != shellWords(wantTest) {
-		t.Errorf("step %q run = %q, want %q (every gated test by name, with -race and -v, the output kept for the verify step)", testStep, got, shellWords(wantTest))
+	if got := shellLines(test.Run); got != shellLines(wantTest) {
+		t.Errorf("step %q run = %q, want %q (every gated test by name, with -race and -v, the output kept for the verify step)", testStep, got, shellLines(wantTest))
 	}
 	verify := job.step(t, verifyStep)
 	if got := strings.Fields(verify.Env["GATED_TESTS"]); !equalStrings(got, forkDoctorGatedTests) {
@@ -91,8 +98,8 @@ for name in $GATED_TESTS; do
   fi
 done
 exit "$status"`
-	if got := shellWords(verify.Run); got != shellWords(wantVerify) {
-		t.Errorf("step %q run = %q, want %q (a skip or a missing test exits 0 under go test, so each name must be read from the log)", verifyStep, got, shellWords(wantVerify))
+	if got := shellLines(verify.Run); got != shellLines(wantVerify) {
+		t.Errorf("step %q run = %q, want %q (a skip or a missing test exits 0 under go test, so each name must be read from the log)", verifyStep, got, shellLines(wantVerify))
 	}
 	assertStepsBefore(t, job, []string{testStep}, []string{verifyStep})
 	forkScriptLineControls(t, forkPinScript{
@@ -242,8 +249,8 @@ func TestForkEmbeddedGateGuardsAreRunByName(t *testing.T) {
 go test -tags ` + strings.Join(forkGuardTags, ",") + ` -count=1 -v -timeout 15m \
   -run '^` + forkGuardPrefix + `' \
   ./scripts/ 2>&1 | tee "$RUNNER_TEMP/lane-guards.log"`
-	if got := shellWords(test.Run); got != shellWords(wantTest) {
-		t.Errorf("step %q run = %q, want %q (every guard by name, with -v, the output kept for the verify step)", testStep, got, shellWords(wantTest))
+	if got := shellLines(test.Run); got != shellLines(wantTest) {
+		t.Errorf("step %q run = %q, want %q (every guard by name, with -v, the output kept for the verify step)", testStep, got, shellLines(wantTest))
 	}
 	verify := job.step(t, verifyStep)
 	if verify.If != "" || verify.ContinueOnError != nil {
@@ -257,8 +264,8 @@ for name in $GUARD_TESTS; do
   fi
 done
 exit "$status"`
-	if got := shellWords(verify.Run); got != shellWords(wantVerify) {
-		t.Errorf("step %q run = %q, want %q (a skip or a missing test exits 0 under go test, so each name must be read from the log)", verifyStep, got, shellWords(wantVerify))
+	if got := shellLines(verify.Run); got != shellLines(wantVerify) {
+		t.Errorf("step %q run = %q, want %q (a skip or a missing test exits 0 under go test, so each name must be read from the log)", verifyStep, got, shellLines(wantVerify))
 	}
 	assertStepsBefore(t, job, []string{testStep}, []string{verifyStep})
 	forkScriptLineControls(t, forkPinScript{
@@ -288,7 +295,7 @@ exit "$status"`
 }
 
 // Line structure of the scripts the pins compare (be-glyo9v, the N1 follow-up
-// of be-zbhceo). shellWords folds every line break into a space. That keeps
+// of be-zbhceo). A comparison that folds every line break into a space keeps
 // the YAML indentation out of the comparison, and it also hides the breaks the
 // shell does read: `echo "..."` and `status=1` joined onto one line, or `exit`
 // and `"$status"` split over two, still compare equal to the pinned script,
@@ -303,7 +310,7 @@ exit "$status"`
 // forkPinAccepts: whether the pins take got for the pinned script want. It is
 // the one place the controls meet the comparison the guards make.
 func forkPinAccepts(got, want string) bool {
-	return shellWords(got) == shellWords(want)
+	return shellLines(got) == shellLines(want)
 }
 
 // forkPinEdit: one named edit of a pinned script, old replaced by new where
