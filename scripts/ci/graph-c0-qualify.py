@@ -6,19 +6,88 @@ Issue/Memory/Link installed workflow, HTTP security and authenticated independen
 Node/Python BDP reads. This is not full Memory, History or HTTP Write proof.
 The caller supplies the ordinary released Dolt binary and CI Build Artifacts.
 All databases and process groups belong to this run; no existing server is used.
+
+The proof runs as three legs on separate runners (--leg storage-a, storage-b, rest) and
+--leg aggregate then checks them as one: the legs together must prove exactly what the
+single lane did. The constants below fix the split.
 """
 import argparse
+import collections
 import contextlib
 import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
+import shutil
 import signal
 import socket
 import subprocess
 import sys
 import time
+
+# The leg split (be-vm7gou, ruling be-jmdn71 G7). This one block fixes the group counts, the legs and the whole
+# groups each storage leg runs. The verifier test asserts that it equals the workflow's leg ids and that the storage
+# legs partition groups 1..STORAGE_GROUPS, so a six-group response or a third storage leg is a change to this block
+# and to fork-qualification.yml and to nothing else.
+STORAGE_GROUPS = 4  # go test groups of ./internal/storage/graphstore (sorted round-robin partition)
+CLI_GROUPS = 3  # go test groups of ./cmd/bd; all of them run in the rest leg
+STORAGE_LEGS = {"storage-a": (1, 4), "storage-b": (2, 3)}  # leg -> the whole groups it runs
+REST_LEG = "rest"
+LEGS = (*STORAGE_LEGS, REST_LEG)
+AGGREGATE = "aggregate"
+GROUPED = {"storage": STORAGE_GROUPS, "cli": CLI_GROUPS}  # label -> its number of groups
+# Every label of summary.json's "passed", in the order the single lane ran them.
+PASSED_LABELS = ("graphpatch", "storage", "config", "query-config", "utc-issueops", "utc-db", "utc-types",
+                 "agent-template", "graph-claude-setup", "cli", "bdpwire", "graphread", "graph-http")
+REST_LABELS = tuple(label for label in PASSED_LABELS if label != "storage")
+LEG_LABELS = {**{leg: ("storage",) for leg in STORAGE_LEGS}, REST_LEG: REST_LABELS}
+LEG_GROUPS = {**{leg: {"storage": numbers} for leg, numbers in STORAGE_LEGS.items()},
+              REST_LEG: {"cli": tuple(range(1, CLI_GROUPS + 1))}}  # leg -> label -> the groups it runs
+CAPTURE_SERVER = "capture"  # the rest leg's one shared server for the HTTP/BDP capture and smoke
+# What the rest leg proves beyond go test, as summary.json states it.
+REST_FACTS = dict(installedCLICommands=10, engines=["embedded", "server"], childrenRemaining=0, bdpHTTP=True, pythonBDP=True)
+EVIDENCE = "graph-c0-evidence"  # each leg artifact's evidence directory; the combined artifact keeps the name
+LEG_ARTIFACT = "graph-leg-{leg}-{commit}"  # the name fork-qualification.yml uploads a leg's artifact under and downloads it by
+
+# Subtests that must pass in their package's own run. A storage leg holds only some of the groups, so the storage
+# tuples are checked across the legs by the aggregator; every tuple is checked there.
+STORAGE_REQUIRED = tuple("TestLinkUnlinkDefaultSourceReadBudget/" + engine + "/" + case
+                         for engine in ("embedded", "server") for case in ("id-default", "pair-default", "id-explicit"))
+CLI_REQUIRED = (
+    "TestGraphPreviewAgentInstructionsWorkflow/embedded/fresh",
+    "TestGraphPreviewAgentInstructionsWorkflow/embedded/shared-file",
+    "TestGraphPreviewAgentInstructionsWorkflow/embedded/skip-agents",
+    "TestGraphPreviewAgentInstructionsWorkflow/embedded/full-profile-refusal",
+    "TestGraphPreviewAgentInstructionsWorkflow/server/fresh",
+    "TestGraphPreviewAgentInstructionsWorkflow/server/shared-file",
+    "TestGraphPreviewAgentInstructionsWorkflow/server/skip-agents",
+    "TestGraphPreviewAgentInstructionsWorkflow/server/full-profile-refusal",
+    "TestGraphPreviewUsabilityWorkflow/embedded", "TestGraphPreviewUsabilityWorkflow/server",
+    "TestGraphPreviewClaudeStopWorkflow/embedded", "TestGraphPreviewClaudeStopWorkflow/server",
+    "TestGraphPreviewClaudeStopAutoInit/embedded", "TestGraphPreviewClaudeStopAutoInit/server",
+    "TestGraphPreviewClaudeStopAutoInitPreflight",
+    "TestGraphPreviewClaudeStopAutoInitRefusalMessages/global-plugin", "TestGraphPreviewClaudeStopAutoInitRefusalMessages/claude-symlink",
+    "TestGraphPreviewClaudeStopInstallFailure/embedded", "TestGraphPreviewClaudeStopInstallFailure/server",
+    "TestGraphPreviewClaudeStopSkipAgentsAlone/embedded", "TestGraphPreviewClaudeStopSkipAgentsAlone/server",
+    "TestGraphPreviewClaudeStopHookAdmissionNonBlocking/embedded", "TestGraphPreviewClaudeStopHookAdmissionNonBlocking/server",
+    "TestGraphPreviewClaudeStopProfileRefusal/embedded/missing", "TestGraphPreviewClaudeStopProfileRefusal/embedded/minimal", "TestGraphPreviewClaudeStopProfileRefusal/embedded/stale",
+    "TestGraphPreviewClaudeStopProfileRefusal/server/missing", "TestGraphPreviewClaudeStopProfileRefusal/server/minimal", "TestGraphPreviewClaudeStopProfileRefusal/server/stale",
+    "TestGraphPreviewCompatibilityDefaultsWorkflow/embedded", "TestGraphPreviewCompatibilityDefaultsWorkflow/server",
+    "TestGraphPreviewIssueAuthoringWorkflow/embedded", "TestGraphPreviewIssueAuthoringWorkflow/server",
+    "TestGraphPreviewIssueAppendWorkflow/embedded", "TestGraphPreviewIssueAppendWorkflow/server",
+    "TestGraphPreviewIssueClaimWorkflow/embedded", "TestGraphPreviewIssueClaimWorkflow/server",
+    "TestGraphPreviewIssueAssignmentWorkflow/embedded", "TestGraphPreviewIssueAssignmentWorkflow/server",
+    "TestGraphPreviewMixedCoreWorkflow/embedded", "TestGraphPreviewMixedCoreWorkflow/server",
+    "TestGraphPreviewMemoryDeleteWorkflow/embedded", "TestGraphPreviewMemoryDeleteWorkflow/server",
+    "TestGraphPreviewQueryWorkflow/embedded", "TestGraphPreviewQueryWorkflow/server",
+    "TestGraphPreviewMemoryReadsWorkflow/embedded", "TestGraphPreviewMemoryReadsWorkflow/server",
+    "TestGraphPreviewPropertiesPatchWorkflow/embedded", "TestGraphPreviewPropertiesPatchWorkflow/server")
+GRAPHREAD_REQUIRED = ("TestAuthoritativeRecordsProjectToPublicWire/embedded", "TestAuthoritativeRecordsProjectToPublicWire/server")
+GRAPH_HTTP_REQUIRED = ("TestGraphReadHTTPAuthorityAndSecurity/issue-priority-assignment",
+                       "TestGraphReadHTTPAuthorityAndSecurity/issue-append-notes")
+REQUIRED = {"storage": STORAGE_REQUIRED, "cli": CLI_REQUIRED, "graphread": GRAPHREAD_REQUIRED, "graph-http": GRAPH_HTTP_REQUIRED}
 
 OWNER_CLEANUP_GRACE = 30
 GO_TEST_TIMEOUT = 900  # seconds; the -timeout=15m every go test group is given
@@ -90,6 +159,48 @@ def partition_required_tests(names, groups):
     union = [name for group in selections for name in group]
     require(len(union) == len(set(union)) and set(union) == set(names), "incomplete required test partition")
     return selections
+
+
+def roots_digest(names):
+    return hashlib.sha256(("\n".join(sorted(names)) + "\n").encode()).hexdigest()
+
+
+def host_info():
+    """The runner's hardware, for reading leg latency. Named fields only, never an environment dump; never gates."""
+    def read(path, pattern):
+        try:
+            found = re.search(pattern, Path(path).read_text(), re.MULTILINE)
+        except OSError:
+            return None
+        return found and found.group(1).strip()
+
+    return dict(nproc=len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+                cpuModel=read("/proc/cpuinfo", r"^model name\s*:\s*(.+)$"),
+                memTotal=read("/proc/meminfo", r"^MemTotal:\s*(.+)$"),
+                kernel=platform.release(), runnerImageVersion=os.environ.get("ImageVersion"))
+
+
+def check_leg_constants():
+    """The split must run every label, and every group of a grouped label exactly once, across the legs."""
+    require(set(LEGS) == set(LEG_LABELS) == set(LEG_GROUPS), "every leg needs its labels and groups")
+    for leg in LEGS:
+        require(set(LEG_GROUPS[leg]) == {label for label in LEG_LABELS[leg] if label in GROUPED},
+                f"{leg}: groups must be listed for exactly the grouped labels it runs")
+    for label in PASSED_LABELS:
+        legs = [leg for leg in LEGS if label in LEG_LABELS[leg]]
+        if label in GROUPED:
+            numbers = sorted(n for leg in legs for n in LEG_GROUPS[leg][label])
+            require(numbers == list(range(1, GROUPED[label] + 1)), f"{label}: the legs must run groups 1..{GROUPED[label]} once each")
+        else:
+            require(len(legs) == 1, f"{label}: must run in exactly one leg")
+
+
+def expected_servers(leg):
+    """The fresh servers one leg starts: one per go test run (one per group of a grouped label) and the capture server."""
+    servers = []
+    for label in LEG_LABELS[leg]:
+        servers += [f"{label}-group-{n}" for n in LEG_GROUPS[leg][label]] if label in GROUPED else [label]
+    return servers + ([CAPTURE_SERVER] if leg == REST_LEG else [])
 
 
 def cleanup_registered_groups(path):
@@ -397,6 +508,209 @@ def publish_phase_report(receipts, summary_path):
             print(f"::warning title=Phase table not written::{error}", flush=True)
 
 
+# The aggregator. It takes the expected legs from the constants above, never from the workflow, and believes no receipt:
+# it parses every leg's retained go test output again, so a proof counts only if the evidence itself shows it.
+SERVER_SUFFIX = "-server-shutdown"
+LEG_PRIVATE = ("host.json", "leg.json", "receipts.json")  # per leg and not republished as they are
+REBUILT = tuple(label + suffix for label in GROUPED for suffix in (".stdout", ".stderr", "-groups.json"))  # built from the groups
+SHARED = ("source.json", "home", *(f"{label}.{ext}" for label in ("head", "source-status", "dolt-version") for ext in ("stdout", "stderr")),
+          *(f"{label}-discovery.{ext}" for label in GROUPED for ext in ("stdout", "stderr", "json")))  # the same in every leg that has them
+SHARED_RECEIPTS = ("head", "source-status", "dolt-version", *(label + "-discovery" for label in GROUPED))
+MERGE_ORDER = (REST_LEG, *STORAGE_LEGS)  # the leg whose copy of a shared file is republished comes first
+
+
+def read_bytes(path):
+    require(path.is_file(), f"missing evidence file: {path}")
+    return path.read_bytes()
+
+
+def read_json(path):
+    return json.loads(read_bytes(path))
+
+
+def go_events(path):
+    return [json.loads(line) for line in read_bytes(path).splitlines()]
+
+
+def passed_tests(events):
+    return {e["Test"] for e in events if e.get("Action") == "pass" and e.get("Test")}
+
+
+def check_discovery(evidence, label):
+    """A label's discovery record, held to its own digest and to the compiled listing kept beside it."""
+    found = read_json(evidence / (label + "-discovery.json"))
+    roots = found["roots"]
+    require(roots and roots == sorted(set(roots)) and found["sha256"] == roots_digest(roots),
+            f"{label}: discovery digest does not match its roots")
+    listing = (evidence / (label + "-discovery.stdout")).read_text()
+    require(sorted(re.findall(r"^Test\w+$", listing, re.MULTILINE)) == roots,
+            f"{label}: retained compiled listing differs from the discovery record")
+    return found
+
+
+def check_single(label, evidence, record):
+    found = check_discovery(evidence, label)
+    events = go_events(evidence / (label + ".stdout"))
+    count = verify_tests(events, set(found["roots"]))
+    require(record["passed"].get(label) == count and record["discovery"].get(label) == found["sha256"],
+            f"{label}: leg receipt differs from its evidence")
+    require(set(REQUIRED.get(label, ())) <= passed_tests(events), f"{label}: required engine proof absent")
+    return found
+
+
+def check_grouped(label, evidence_by_leg, records):
+    """A grouped label across the legs that run it: each group once, each root once, every required tuple present."""
+    discovery, plans, ran = None, {}, {}
+    for leg, evidence in evidence_by_leg.items():
+        found = check_discovery(evidence, label)
+        require(discovery in (None, found), f"{label}: discovery differs between legs")
+        discovery = found
+        require(records[leg]["discovery"].get(label) == found["sha256"], f"{leg}: receipt discovery digest differs from its evidence")
+        plans[leg] = read_json(evidence / (label + "-groups.json"))
+        require(len(plans[leg]["groups"]) == GROUPED[label], f"{leg}: {label} plan has the wrong number of groups")
+        ran[leg] = {number for number, group in enumerate(plans[leg]["groups"], 1) if group["passed"] is True}
+    every = [number for numbers in ran.values() for number in numbers]
+    require(len(every) == len(set(every)), f"{label}: duplicate group across legs: {sorted(n for n in set(every) if every.count(n) > 1)}")
+    require(sorted(every) == list(range(1, GROUPED[label] + 1)), f"{label}: groups run across the legs are {sorted(every)}, not 1..{GROUPED[label]}")
+    selections = partition_required_tests(discovery["roots"], GROUPED[label])
+    completed, runs = set(), collections.Counter()
+    for leg, evidence in evidence_by_leg.items():
+        plan = plans[leg]
+        require(ran[leg] == set(LEG_GROUPS[leg][label]), f"{leg}: ran {label} groups {sorted(ran[leg])}, not its own {list(LEG_GROUPS[leg][label])}")
+        require(plan["complete"] is (len(ran[leg]) == GROUPED[label]) and plan["package"] == discovery["package"]
+                and plan["selector"] == discovery["selector"] and plan["sourceRoots"] == plan["compiledRoots"] == discovery["roots"],
+                f"{leg}: {label} plan differs from its discovery")
+        for number, (group, names) in enumerate(zip(plans[leg]["groups"], selections), 1):
+            part = evidence / f"{label}-group-{number}.stdout"
+            require(group["label"] == f"{label}-group-{number}" and group["roots"] == names
+                    and group["selector"] == "^(" + "|".join(names) + ")$", f"{leg}: {label} group {number} differs from the partition")
+            require(part.exists() == (number in ran[leg]), f"{leg}: {label} group {number} output does not match its plan")
+            if number in ran[leg]:
+                require(group["stdoutSHA256"] == digest(part), f"{leg}: {label} group {number} output differs from its plan")
+                events = go_events(part)
+                verify_tests(events, set(names))
+                completed |= passed_tests(events)
+                runs.update(e["Test"] for e in events if e.get("Action") == "run" and "/" not in e.get("Test", ""))
+    require(set(runs) == set(discovery["roots"]) and set(runs.values()) == {1}, f"{label}: a root did not run exactly once across the legs")
+    require(set(REQUIRED.get(label, ())) <= completed, f"{label}: required engine proof absent")
+    return discovery, {number: leg for leg, numbers in ran.items() for number in numbers}
+
+
+def check_leg(leg, evidence, commit):
+    """The leg's completion receipt, which only a leg that finished writes, held to the evidence beside it."""
+    require((evidence / "leg.json").is_file(), f"{leg}: no completion receipt (leg.json); the leg did not finish")
+    record, source = read_json(evidence / "leg.json"), read_json(evidence / "source.json")
+    require(record.get("leg") == leg and record.get("complete") is True, f"{leg}: completion receipt is for another leg or incomplete")
+    require(record.get("commit") == commit, f"{leg}: receipt commit {record.get('commit')} differs from {commit}")
+    require(source.get("commit") == commit and (evidence / "head.stdout").read_text().strip() == commit,
+            f"{leg}: evidence commit differs from {commit}")
+    require(record.get("labels") == list(LEG_LABELS[leg])
+            and record.get("groups") == {label: list(numbers) for label, numbers in LEG_GROUPS[leg].items()},
+            f"{leg}: receipt labels or groups differ from the leg set")
+    receipts = read_json(evidence / "receipts.json")
+    require(all(r.get("exit") == 0 and "failure" not in r for r in receipts), f"{leg}: a command did not exit cleanly")
+    shutdowns = [r for r in receipts if r["label"].endswith(SERVER_SUFFIX)]
+    servers = sorted(r["label"][:-len(SERVER_SUFFIX)] for r in shutdowns)
+    require(servers == sorted(expected_servers(leg)), f"{leg}: servers {servers} are not one fresh server per group")
+    require(all(r["forced"] is False and r["groupGone"] is True and r["portClosed"] is True for r in shutdowns),
+            f"{leg}: unclean server shutdown")
+    return record, source, receipts, servers
+
+
+def aggregate(legs_dir, commit, output):
+    """Check the legs as one lane, then republish their evidence in the layout the single lane had.
+
+    The legs are in legs_dir, one directory per leg artifact, named as the artifact is. The combined artifact is
+    written to output: graph-c0-evidence/, graph-c0-build/ and bdp-client-build/ beside each other.
+    """
+    check_leg_constants()
+    legs_dir, output = Path(legs_dir).resolve(), Path(output).resolve()
+    names = {leg: LEG_ARTIFACT.format(leg=leg, commit=commit) for leg in LEGS}
+    present = sorted(path.name for path in legs_dir.iterdir()) if legs_dir.is_dir() else []
+    require(present == sorted(names.values()), f"leg artifacts present {present}, expected {sorted(names.values())}")
+    evidence = {leg: legs_dir / names[leg] / EVIDENCE for leg in LEGS}
+    records, sources, receipts, servers = {}, {}, {}, []
+    for leg in LEGS:
+        records[leg], sources[leg], receipts[leg], found = check_leg(leg, evidence[leg], commit)
+        servers += found
+    require(len(servers) == len(set(servers)) and len(servers) == sum(len(expected_servers(leg)) for leg in LEGS),
+            "a server was shared or missing across the legs")
+    identity = {leg: {key: sources[leg][key] for key in ("binarySHA256", "doltSHA256", "runnerSHA256")} for leg in LEGS}
+    require(all(found == identity[REST_LEG] for found in identity.values()), "the legs ran different binaries or runner scripts")
+    require(identity[REST_LEG]["runnerSHA256"] == digest(Path(__file__)), "the legs ran a different runner script than the aggregator")
+    builds = {leg: [read_bytes(legs_dir / names[leg] / "graph-c0-build" / name) for name in ("build-manifest.txt", "SHA256SUMS")] for leg in LEGS}
+    manifest = dict(line.split("=", 1) for line in builds[REST_LEG][0].decode().splitlines())
+    require(all(found == builds[REST_LEG] for found in builds.values()) and manifest.get("commit") == commit
+            and builds[REST_LEG][1].decode().split()[0] == identity[REST_LEG]["binarySHA256"], "the legs ran different build artifacts")
+    read_bytes(legs_dir / names[REST_LEG] / "bdp-client-build" / "client-build.json")
+    require(records[REST_LEG].get("facts") == REST_FACTS, f"{REST_LEG}: receipt lacks the installed CLI, engine, HTTP and Python facts")
+    passed, owners = {}, {}
+    for label in PASSED_LABELS:
+        holders = {leg: evidence[leg] for leg in LEGS if label in LEG_LABELS[leg]}
+        if label in GROUPED:
+            found, owners[label] = check_grouped(label, holders, records)
+            passed[label] = len(found["roots"])
+            if label != "storage":
+                require(records[REST_LEG]["passed"].get(label) == passed[label], f"{label}: leg receipt differs from its evidence")
+        else:
+            (leg, directory), = holders.items()
+            passed[label] = len(check_single(label, directory, records[leg])["roots"])
+    merge(legs_dir, names, evidence, receipts, owners, output, commit, passed)
+    return passed
+
+
+def merge_grouped(label, evidence, owners, combined):
+    """The label's plan and combined output, built from its groups in group order, whichever leg ran each one."""
+    plans = {leg: read_json(directory / (label + "-groups.json")) for leg, directory in evidence.items()}
+    plan = json.loads(json.dumps(next(iter(plans.values()))))
+    for number, leg in owners.items():
+        plan["groups"][number - 1] = plans[leg]["groups"][number - 1]
+    plan["complete"] = True
+    for suffix in ("stdout", "stderr"):
+        data = b"".join((evidence[owners[number]] / f"{label}-group-{number}.{suffix}").read_bytes() for number in sorted(owners))
+        (combined / f"{label}.{suffix}").write_bytes(data)
+        plan[suffix + "SHA256"] = hashlib.sha256(data).hexdigest()
+    (combined / (label + "-groups.json")).write_text(json.dumps(plan, indent=2) + "\n")
+
+
+def merge(legs_dir, names, evidence, receipts, owners, output, commit, passed):
+    """Write the combined artifact: every leg's evidence under the file names the single lane used."""
+    taken, merged, seen = {}, [], {}
+    for leg in MERGE_ORDER:  # a file or receipt two legs both hold is refused here, before anything is written
+        for entry in sorted(evidence[leg].iterdir()):
+            if entry.name in LEG_PRIVATE or entry.name in REBUILT:
+                continue
+            if entry.name in taken:
+                require(entry.name in SHARED, f"{entry.name} is in both {taken[entry.name][0]} and {leg}")
+                continue
+            taken[entry.name] = (leg, entry)
+        for receipt in receipts[leg]:
+            if receipt["label"] in seen:
+                require(receipt["label"] in SHARED_RECEIPTS, f"receipt {receipt['label']} is in both {seen[receipt['label']]} and {leg}")
+                continue
+            seen[receipt["label"]] = leg
+            merged.append(receipt)
+    combined = output / EVIDENCE
+    combined.mkdir(parents=True, exist_ok=False)
+    for _, entry in taken.values():
+        if entry.is_dir():
+            shutil.copytree(entry, combined / entry.name, symlinks=True)
+        else:
+            shutil.copy2(entry, combined / entry.name)
+    for label in GROUPED:
+        merge_grouped(label, {leg: evidence[leg] for leg in LEGS if label in LEG_LABELS[leg]}, owners[label], combined)
+    (combined / "receipts.json").write_text(json.dumps(merged, indent=2) + "\n")
+    (combined / "summary.json").write_text(json.dumps(dict(commit=commit, passed=passed, **REST_FACTS), indent=2) + "\n")
+    (combined / "legs.json").write_text(json.dumps(dict(commit=commit, servers=sum(len(expected_servers(leg)) for leg in LEGS), legs={
+        leg: dict(artifact=names[leg], labels=list(LEG_LABELS[leg]), servers=expected_servers(leg),
+                  groups={label: list(numbers) for label, numbers in LEG_GROUPS[leg].items()}) for leg in LEGS}), indent=2) + "\n")
+    build = output / "graph-c0-build"
+    build.mkdir()
+    for name in ("build-manifest.txt", "SHA256SUMS"):
+        shutil.copy2(legs_dir / names[REST_LEG] / "graph-c0-build" / name, build / name)
+    shutil.copytree(legs_dir / names[REST_LEG] / "bdp-client-build", output / "bdp-client-build", symlinks=True)
+
+
 class Qualification:
     def __init__(self, args):
         self.root = Path(__file__).resolve().parents[2]
@@ -408,9 +722,10 @@ class Qualification:
         self.children = set()
         self.receipts = []
         self.counts = {}
-        self.client_checkout = Path(args.bdp_checkout).resolve()
-        self.client_manifest = Path(args.client_manifest).resolve()
-        self.node = Path(args.node).resolve()
+        # Only the rest leg builds and runs the public BDP client; a storage leg has no Node or client checkout.
+        self.client_checkout, self.client_manifest, self.node = (
+            None if getattr(args, name) is None else Path(getattr(args, name)).resolve()
+            for name in ("bdp_checkout", "client_manifest", "node"))
         self.env = {k: os.environ[k] for k in (
             "PATH", "GOCACHE", "GOMODCACHE", "GOROOT", "DEVELOPER_DIR", "TMPDIR") if k in os.environ}
         home = self.output / "home"
@@ -572,7 +887,13 @@ class Qualification:
             require(code == 0 and not forced and group_gone and port_closed,
                     f"server cleanup failed: exit={code}, forced={forced}, groupGone={group_gone}, portClosed={port_closed}")
 
-    def tests(self, package, selector, files, label, required_subtests=(), groups=1):
+    def tests(self, package, selector, files, label, required_subtests=(), groups=1, run_groups=None):
+        """Discover a package's test roots, then run them under fresh servers: one for the package, or one per group.
+
+        run_groups names the (1-based) groups of a grouped label this call runs, for a leg that holds only some of
+        them; None runs them all. Such a leg proves only the roots of its own groups, and the aggregator proves the
+        rest across the legs, so only a run of every group sets self.counts[label] and the plan's "complete".
+        """
         # Source discovery also sees accidentally build-excluded added tests.
         source_names = []
         for path in files:
@@ -586,12 +907,19 @@ class Qualification:
         listed = set(compiled_names)
         require(len(compiled_names) == len(listed), f"{label}: duplicate compiled test roots")
         require(listed == expected and expected, f"{label}: source and compiled test discovery disagree")
+        (self.output / (label + "-discovery.json")).write_text(json.dumps(
+            dict(package=package, selector=selector, roots=sorted(expected), sha256=roots_digest(expected)), indent=2) + "\n")
+        require(groups > 1 or run_groups is None, f"{label}: run_groups needs a grouped run")
         flags = ["go", "test", "-tags", "gms_pure_go", "-json", "-count=1", "-p=1",
                  "-parallel=1", "-timeout=15m", "-run"]
+        proved = expected
         if groups == 1:
             with self.server(label):
                 out = self.run([*flags, selector, package], label, timeout=960, roots=len(expected))
         else:
+            ran = tuple(range(1, groups + 1)) if run_groups is None else tuple(run_groups)
+            require(ran and list(ran) == sorted(set(ran)) and set(ran) <= set(range(1, groups + 1)),
+                    f"{label}: groups to run must be distinct numbers in 1..{groups}")
             selections = partition_required_tests(source_names, groups)
             plan = dict(package=package, selector=selector, sourceRoots=sorted(expected),
                         compiledRoots=sorted(listed), complete=False, groups=[
@@ -603,7 +931,9 @@ class Qualification:
             aggregate_error = self.output / (label + ".stderr")
             aggregate_error.write_bytes(b"")
             try:
-                for group in plan["groups"]:
+                for index, group in enumerate(plan["groups"], 1):
+                    if index not in ran:
+                        continue
                     group_label, names, selected = group["label"], group["roots"], group["selector"]
                     (self.output / (label + "-groups.json")).write_text(json.dumps(plan, indent=2) + "\n")
                     try:
@@ -619,20 +949,27 @@ class Qualification:
                                 with combined.open("ab") as target:
                                     target.write(part.read_bytes())
                                 group[suffix + "SHA256"] = digest(part)
-                executed = [name for group in plan["groups"] for name in group["roots"]]
-                require(len(executed) == len(set(executed)) and set(executed) == expected,
+                executed = [name for index, group in enumerate(plan["groups"], 1) if index in ran for name in group["roots"]]
+                proved = set(executed)
+                require(len(executed) == len(proved) and (proved == expected if len(ran) == groups else proved <= expected),
                         f"{label}: grouped test union differs from complete discovery")
                 out = aggregate.read_bytes()
-                verify_tests([json.loads(line) for line in out.splitlines()], expected)
-                plan["complete"] = True
+                verify_tests([json.loads(line) for line in out.splitlines()], proved)
+                plan["complete"] = len(ran) == groups
             finally:
                 plan["stdoutSHA256"] = digest(aggregate)
                 plan["stderrSHA256"] = digest(aggregate_error)
                 (self.output / (label + "-groups.json")).write_text(json.dumps(plan, indent=2) + "\n")
         events = [json.loads(line) for line in out.splitlines()]
-        self.counts[label] = verify_tests(events, expected)
+        count = verify_tests(events, proved)
         completed = {e.get("Test") for e in events if e.get("Action") == "pass"}
-        require(set(required_subtests) <= completed, f"{label}: required engine proof absent")
+        required = set(required_subtests)
+        if proved == expected:
+            self.counts[label] = count
+        else:
+            # Only the tuples whose root is in this leg's groups can be here; the aggregator checks the rest.
+            required = {name for name in required if name.split("/", 1)[0] in proved}
+        require(required <= completed, f"{label}: required engine proof absent")
 
     def cli(self, work, label, *args):
         return json.loads(self.run([self.bd, *args, "--json"], label, cwd=work))
@@ -669,7 +1006,8 @@ class Qualification:
         status = self.cli(work, engine + "-status", "status", "--graph")
         require(status["result"]["capabilities"]["memoryRead"] is True, "Memory read not advertised")
 
-    def execute(self):
+    def prelude(self):
+        """What every leg checks before its tests: the installed CLI, a clean tree at the build's commit, the pinned Dolt."""
         require(self.bd.is_file() and os.access(self.bd, os.X_OK), "missing installed CLI")
         require(self.dolt.is_file() and os.access(self.dolt, os.X_OK), "missing released Dolt")
         head = self.run(["git", "rev-parse", "HEAD"], "head").decode().strip()
@@ -683,13 +1021,33 @@ class Qualification:
         require(version and version[0].strip() == "dolt version 2.1.8", "C0 requires released Dolt2.1.8")
         (self.output / "source.json").write_text(json.dumps(dict(commit=head, binarySHA256=digest(self.bd),
             doltSHA256=digest(self.dolt), runnerSHA256=digest(Path(__file__))), indent=2) + "\n")
+        return head
+
+    def execute(self, leg):
+        """Run one leg. leg.json, its completion receipt, is written last: a leg that did not finish has none."""
+        head = self.prelude()
+        (self.output / "host.json").write_text(json.dumps(host_info(), indent=2) + "\n")
+        if leg == REST_LEG:
+            self.execute_rest()
+        else:
+            self.execute_storage(STORAGE_LEGS[leg])
+        require(not self.children, "owned child process remains")
+        discovery = {label: json.loads((self.output / (label + "-discovery.json")).read_text())["sha256"] for label in LEG_LABELS[leg]}
+        (self.output / "leg.json").write_text(json.dumps(dict(
+            leg=leg, commit=head, complete=True, labels=list(LEG_LABELS[leg]),
+            groups={label: list(numbers) for label, numbers in LEG_GROUPS[leg].items()},
+            discovery=discovery, passed=self.counts, **({"facts": REST_FACTS} if leg == REST_LEG else {})), indent=2) + "\n")
+
+    def execute_storage(self, groups):
+        """A storage leg: whole groups of the graphstore tests, each under its own fresh server."""
+        self.tests("./internal/storage/graphstore", "^Test", (self.root / "internal/storage/graphstore").glob("*_test.go"), "storage",
+                   STORAGE_REQUIRED, groups=STORAGE_GROUPS, run_groups=groups)
+
+    def execute_rest(self):
+        """The rest leg: every other package, the installed CLI groups, the HTTP/BDP capture and smoke and the Python example."""
         with contextlib.ExitStack() as servers:
             # Sequential package runs/provisioning; concurrency inside same-store tests remains exercised.
             self.tests("./internal/graphpatch", "^Test", (self.root / "internal/graphpatch").glob("*_test.go"), "graphpatch")
-            self.tests("./internal/storage/graphstore", "^Test", (self.root / "internal/storage/graphstore").glob("*_test.go"), "storage",
-                       tuple("TestLinkUnlinkDefaultSourceReadBudget/" + engine + "/" + case
-                             for engine in ("embedded", "server")
-                             for case in ("id-default", "pair-default", "id-explicit")), groups=4)
             self.tests("./internal/configfile", "^TestGraphMode", (self.root / "internal/configfile").glob("graph_mode_test.go"), "config")
             self.tests("./internal/storage/issueops", "^TestResolve(CustomConfigStrict|InfraTypesStrict|ConfigLegacy)",
                        (self.root / "internal/storage/issueops").glob("config_strict_test.go"), "query-config")
@@ -703,42 +1061,13 @@ class Qualification:
                        (self.root / "internal/templates/agents").glob("*_test.go"), "agent-template")
             self.tests("./cmd/bd/setup", "^TestGraphPreview", (self.root / "cmd/bd/setup").glob("graph_claude_test.go"), "graph-claude-setup")
             self.tests("./cmd/bd", "^Test(GraphModeCLI|GraphPreview)", (self.root / "cmd/bd").glob("graph*test.go"), "cli",
-                       ("TestGraphPreviewAgentInstructionsWorkflow/embedded/fresh",
-                        "TestGraphPreviewAgentInstructionsWorkflow/embedded/shared-file",
-                        "TestGraphPreviewAgentInstructionsWorkflow/embedded/skip-agents",
-                        "TestGraphPreviewAgentInstructionsWorkflow/embedded/full-profile-refusal",
-                        "TestGraphPreviewAgentInstructionsWorkflow/server/fresh",
-                        "TestGraphPreviewAgentInstructionsWorkflow/server/shared-file",
-                        "TestGraphPreviewAgentInstructionsWorkflow/server/skip-agents",
-                        "TestGraphPreviewAgentInstructionsWorkflow/server/full-profile-refusal",
-                        "TestGraphPreviewUsabilityWorkflow/embedded", "TestGraphPreviewUsabilityWorkflow/server",
-                        "TestGraphPreviewClaudeStopWorkflow/embedded", "TestGraphPreviewClaudeStopWorkflow/server",
-                        "TestGraphPreviewClaudeStopAutoInit/embedded", "TestGraphPreviewClaudeStopAutoInit/server",
-                        "TestGraphPreviewClaudeStopAutoInitPreflight",
-                        "TestGraphPreviewClaudeStopAutoInitRefusalMessages/global-plugin", "TestGraphPreviewClaudeStopAutoInitRefusalMessages/claude-symlink",
-                        "TestGraphPreviewClaudeStopInstallFailure/embedded", "TestGraphPreviewClaudeStopInstallFailure/server",
-                        "TestGraphPreviewClaudeStopSkipAgentsAlone/embedded", "TestGraphPreviewClaudeStopSkipAgentsAlone/server",
-                        "TestGraphPreviewClaudeStopHookAdmissionNonBlocking/embedded", "TestGraphPreviewClaudeStopHookAdmissionNonBlocking/server",
-                        "TestGraphPreviewClaudeStopProfileRefusal/embedded/missing", "TestGraphPreviewClaudeStopProfileRefusal/embedded/minimal", "TestGraphPreviewClaudeStopProfileRefusal/embedded/stale",
-                        "TestGraphPreviewClaudeStopProfileRefusal/server/missing", "TestGraphPreviewClaudeStopProfileRefusal/server/minimal", "TestGraphPreviewClaudeStopProfileRefusal/server/stale",
-                        "TestGraphPreviewCompatibilityDefaultsWorkflow/embedded", "TestGraphPreviewCompatibilityDefaultsWorkflow/server",
-                        "TestGraphPreviewIssueAuthoringWorkflow/embedded", "TestGraphPreviewIssueAuthoringWorkflow/server",
-                        "TestGraphPreviewIssueAppendWorkflow/embedded", "TestGraphPreviewIssueAppendWorkflow/server",
-                        "TestGraphPreviewIssueClaimWorkflow/embedded", "TestGraphPreviewIssueClaimWorkflow/server",
-                        "TestGraphPreviewIssueAssignmentWorkflow/embedded", "TestGraphPreviewIssueAssignmentWorkflow/server",
-                        "TestGraphPreviewMixedCoreWorkflow/embedded", "TestGraphPreviewMixedCoreWorkflow/server",
-                        "TestGraphPreviewMemoryDeleteWorkflow/embedded", "TestGraphPreviewMemoryDeleteWorkflow/server",
-                        "TestGraphPreviewQueryWorkflow/embedded", "TestGraphPreviewQueryWorkflow/server",
-                        "TestGraphPreviewMemoryReadsWorkflow/embedded", "TestGraphPreviewMemoryReadsWorkflow/server",
-                        "TestGraphPreviewPropertiesPatchWorkflow/embedded", "TestGraphPreviewPropertiesPatchWorkflow/server"),
-                       groups=3)
+                       CLI_REQUIRED, groups=CLI_GROUPS)
             self.env["BDP_SPEC_AT_PIN"] = str(self.client_checkout / "docs/specs/bdp.md")
             self.tests("./internal/httpapi/bdpwire", "^Test", (self.root / "internal/httpapi/bdpwire").glob("*_test.go"), "bdpwire")
             self.tests("./internal/httpapi/graphread", "^Test", (self.root / "internal/httpapi/graphread").glob("*_test.go"), "graphread",
-                       ("TestAuthoritativeRecordsProjectToPublicWire/embedded", "TestAuthoritativeRecordsProjectToPublicWire/server"))
+                       GRAPHREAD_REQUIRED)
             self.tests("./internal/httpapi", "^TestGraphRead", (self.root / "internal/httpapi").glob("graph_read*test.go"), "graph-http",
-                       ("TestGraphReadHTTPAuthorityAndSecurity/issue-priority-assignment",
-                        "TestGraphReadHTTPAuthorityAndSecurity/issue-append-notes",))
+                       GRAPH_HTTP_REQUIRED)
             self.run([sys.executable, "-m", "unittest", "discover", "-s", "examples/bdp-read", "-p", "test_*.py"], "python-example-tests")
             python_roots = sum(len(re.findall(r"^    def test_\w+\(", path.read_text(), re.MULTILINE))
                                for path in (self.root / "examples/bdp-read").glob("test_*.py"))
@@ -759,23 +1088,39 @@ class Qualification:
                                     ("client_harness_sha256", "scripts/graph-bdp-read-client.mjs"),
                                     ("python_example_sha256", "examples/bdp-read/read_beads.py")]:
                 require(http_summary[field] == digest(self.root / relative), "HTTP capture source changed")
-        require(not self.children, "owned child process remains")
-        (self.output / "summary.json").write_text(json.dumps(dict(commit=head, passed=self.counts,
-            installedCLICommands=10, engines=["embedded", "server"], childrenRemaining=0, bdpHTTP=True, pythonBDP=True), indent=2) + "\n")
+
+
+# The options each mode takes besides --leg and --output: exactly these, so a storage leg is never given a BDP client.
+OPTIONS = {"storage": ("bd", "dolt", "artifacts"),
+           REST_LEG: ("bd", "dolt", "artifacts", "bdp-checkout", "client-manifest", "node"),
+           AGGREGATE: ("commit", "legs-dir")}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("bd", "dolt", "artifacts", "output", "bdp-checkout", "client-manifest", "node"):
-        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--leg", required=True, choices=(*LEGS, AGGREGATE))
+    parser.add_argument("--output", required=True)
+    for name in sorted({name for names in OPTIONS.values() for name in names}):
+        parser.add_argument("--" + name)
+    args = parser.parse_args()
+    mode = args.leg if args.leg in (REST_LEG, AGGREGATE) else "storage"
+    given = {name for names in OPTIONS.values() for name in names if getattr(args, name.replace("-", "_")) is not None}
+    if given != set(OPTIONS[mode]):
+        parser.error(f"--leg {args.leg} takes exactly --" + ", --".join(OPTIONS[mode]) + " besides --leg and --output")
+    check_leg_constants()
+    if args.leg == AGGREGATE:
+        passed = aggregate(args.legs_dir, args.commit, args.output)
+        print(f"C0 aggregate: {len(LEGS)} legs, {sum(passed.values())} test roots, combined evidence in {args.output}", flush=True)
+        return
+
     def interrupted(signum, _frame):
         raise RuntimeError(f"qualification interrupted by signal {signum}")
 
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
-    qualification = Qualification(parser.parse_args())
+    qualification = Qualification(args)
     try:
-        qualification.execute()
+        qualification.execute(args.leg)
     finally:
         (qualification.output / "receipts.json").write_text(json.dumps(qualification.receipts, indent=2) + "\n")
         publish_phase_report(qualification.receipts, os.environ.get("GITHUB_STEP_SUMMARY"))
