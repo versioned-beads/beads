@@ -22,8 +22,9 @@ import (
 
 // This file is the fork's own (upstream has no copy, so syncs never conflict on
 // it). It pins .github/workflows/fork-qualification.yml, the permanent workflow
-// that keeps three duties the upstream sync takes out of pr.yml (work package
-// W2, be-67atam; ruling be-jvluf7 section 3.5):
+// that keeps four duties: three the upstream sync takes out of pr.yml (work
+// package W2, be-67atam; ruling be-jvluf7 section 3.5) and the served HTTP tests
+// that no fork-hosted lane ran (ruling be-s847fi, build be-vvsbdl):
 //
 //   - build-artifacts: the fork's own build of the Linux bd, uploaded as
 //     fork-build-artifacts. Upstream owns the name ci-build-artifacts, and
@@ -37,6 +38,11 @@ import (
 //     qualification.
 //   - replay-census: the fork's replay guarantee (C1), rebuilt as a narrow go
 //     test, because nothing at the sync target runs `make ci-pr-core` any more.
+//   - served-http: the served HTTP tier. The end-to-end tests of ./backend/http
+//     and ./internal/httpclient skip unless an embedded-Dolt gate is set, so the
+//     job sets the gates, runs both packages under go test -v, and a step of its
+//     own then fails the job unless the log shows both packages ok, five named
+//     sentinel tests passed and every top-level skip is a KNOWN DIVERGENCE.
 //
 // plus one aggregator, "Fork Qualification / Required", that fails unless the
 // result of each job it waits for is exactly success. It does not wait for the
@@ -72,12 +78,20 @@ import (
 //     to one go test with the flags of pr-core.sh, and fails when the list or
 //     ./internal/replay/... is empty or when go test fails.
 //     TestForkQualificationCensusHarnessControls proves that harness can fail.
+//   - 3, the served HTTP tier (ruling be-s847fi section 4.4):
+//     TestForkQualificationServedJobShape pins the job's keys, the three
+//     variables that make the tests run and make a missing run fail, the one go
+//     test line and the step after it; TestForkQualificationServedCheckStep runs
+//     that step's own script, with a go shim, against fixture logs and fails
+//     unless it rejects every way a run can be missing or hollow; and
+//     TestForkQualificationServedControls proves that harness can fail.
 //
 // Criteria this file cannot pin are runs, and nothing here stands in for them:
 // the census run with dolt absent from PATH and REPLAY_REQUIRE=1 (ruling 3.5:
 // "a census that cannot fail is not a census"), the upstream workflow sweeps
-// run in a scratch checkout at the sync target with this workflow present, and
-// the fork pull request that runs the workflow with its aggregator green.
+// run in a scratch checkout at the sync target with this workflow present, the
+// fork pull request that runs the workflow with its aggregator green, and the
+// hosted runs of the served-http job (H1 to H4 of ruling be-s847fi section 5.2).
 //
 // Every pin here asserts a shape of the fork, so the file is permanent: it goes
 // only if the ruling is lifted. If a sync makes one fail in a way the failure
@@ -90,6 +104,7 @@ const (
 	forkQualBuildJob   = "build-artifacts"
 	forkQualGraphJob   = "graph-c0"
 	forkQualCensusJob  = "replay-census"
+	forkQualServedJob  = "served-http"
 	forkQualArtifact   = "fork-build-artifacts"
 	forkQualBinary     = "bd-linux-gms-pure"
 	forkQualBuildPre   = "Fork "
@@ -131,7 +146,7 @@ var (
 	forkQualRanRe     = regexp.MustCompile(`(?m)^Ran (\d+) tests? in `)
 
 	// The jobs the aggregator waits for, sorted.
-	forkQualJobIDs = []string{forkQualBuildJob, forkQualGraphJob, forkQualCensusJob}
+	forkQualJobIDs = []string{forkQualBuildJob, forkQualGraphJob, forkQualCensusJob, forkQualServedJob}
 
 	// The graph qualification's legs (ruling be-jmdn71 G1 and G5), each with its
 	// cap in minutes (R4.4 and G3: every cap at or under forkQualGraphCeiling,
@@ -646,7 +661,7 @@ func forkQualGraphNameProblems(wf ciWorkflow) []string {
 // fails its job unless it continues on error. A shape it cannot evaluate is an
 // error: the simulation does not guess.
 func forkQualGraphResults(wf ciWorkflow, legs map[string]string, refused bool) (map[string]string, error) {
-	results := map[string]string{forkQualBuildJob: "success", forkQualCensusJob: "success", forkQualGraphJob: "success"}
+	results := map[string]string{forkQualBuildJob: "success", forkQualCensusJob: "success", forkQualServedJob: "success", forkQualGraphJob: "success"}
 	for _, id := range forkQualLegIDs {
 		results[id] = "success"
 		if result, ok := legs[id]; ok {
@@ -1153,10 +1168,11 @@ func TestForkQualificationCensusSetup(t *testing.T) {
 	}
 }
 
-// The aggregator's job set: the three jobs of the ruling, the three legs
-// graph-c0 aggregates, and the aggregator, nothing else, and the aggregator needs
-// the three jobs, runs whatever they did, and cannot be made optional. It does not
-// need the legs: a leg that does not succeed skips graph-c0, which it needs.
+// The aggregator's job set: the four jobs of rulings be-jvluf7 section 3.5 and
+// be-s847fi section 4.1, the three legs graph-c0 aggregates, and the aggregator,
+// nothing else, and the aggregator needs the four jobs, runs whatever they did,
+// and cannot be made optional. It does not need the legs: a leg that does not
+// succeed skips graph-c0, which it needs.
 func TestForkQualificationJobSetAndAggregator(t *testing.T) {
 	wf := forkQualLoad(t)
 	aggregatorID, aggregator := forkQualAggregatorJob(t, wf)
@@ -1164,7 +1180,7 @@ func TestForkQualificationJobSetAndAggregator(t *testing.T) {
 	want := append(append(slices.Clone(forkQualJobIDs), forkQualLegIDs...), aggregatorID)
 	slices.Sort(want)
 	if got := sortedKeys(wf.Jobs); !slices.Equal(got, want) {
-		t.Errorf("%s jobs = %v, want %v: the three jobs of ruling be-jvluf7 section 3.5, the graph qualification's legs (ruling be-jmdn71) and the aggregator", forkQualFile, got, want)
+		t.Errorf("%s jobs = %v, want %v: the four jobs of rulings be-jvluf7 section 3.5 and be-s847fi section 4.1, the graph qualification's legs (ruling be-jmdn71) and the aggregator", forkQualFile, got, want)
 	}
 	needs := slices.Clone([]string(aggregator.Needs))
 	slices.Sort(needs)
@@ -1290,7 +1306,7 @@ func forkQualAggregatorViolations(t *testing.T, bash, id string, job ciWorkflowJ
 }
 
 // The aggregator fails on any non-success need, skipped included: the only way
-// to a green Fork Qualification / Required is that all three jobs ran and
+// to a green Fork Qualification / Required is that all four jobs ran and
 // passed. A skipped qualification job is exactly the silent gap this workflow
 // exists to close.
 func TestForkQualificationAggregatorFailsUnlessEveryNeedSucceeded(t *testing.T) {
@@ -1303,7 +1319,7 @@ func TestForkQualificationAggregatorFailsUnlessEveryNeedSucceeded(t *testing.T) 
 }
 
 // forkQualGateJob is a correct aggregator, built in memory: the shape
-// fork-heavy-tiers.yml uses, over this workflow's three jobs. skippedOK names
+// fork-heavy-tiers.yml uses, over this workflow's four jobs. skippedOK names
 // the variables it lets be skipped.
 func forkQualGateJob(skippedOK string, run string) ciWorkflowJob {
 	env := map[string]string{"CI_GATE_NAME": "Fork Qualification", "CI_GATE_SKIPPED_OK": skippedOK}
@@ -2096,6 +2112,595 @@ func TestForkQualificationCensusHarnessControls(t *testing.T) {
 			got := forkQualCensusViolations(t, nil, nil, ciWorkflowStep{Run: tc.script, Shell: tc.shell}, tc.flagged)
 			if len(got) == 0 {
 				t.Errorf("%s is not flagged by scenario %s: the census check cannot tell it from the sample", tc.name, tc.flagged)
+				return
+			}
+			t.Logf("flagged: %s", got[0])
+		})
+	}
+}
+
+// The served HTTP tier (ruling be-s847fi, build be-vvsbdl). The binding values
+// are B1 to B8 of section 4 of the ruling; the check step is its contract K1 to K6
+// and Appendix B, which the controls below mutate.
+const (
+	forkQualServedName   = "Fork Served HTTP Tier"
+	forkQualServedMins   = 60
+	forkQualServedCheck  = "Check what ran"
+	forkQualServedLog    = "SERVED_LOG"
+	forkQualServedLogVal = "${{ runner.temp }}/served-http.log"
+	forkQualServedCache  = "${{ runner.temp }}/go-cache/non-race"
+	forkQualServedStrict = "set -euo pipefail"
+	forkQualServedHTTP   = forkQualFixtureModule + "/backend/http"
+	forkQualServedClient = forkQualFixtureModule + "/internal/httpclient"
+	forkQualServedExtra  = forkQualFixtureModule + "/extra"
+
+	// What a test that is a known divergence says, and the one rule the check
+	// step has for a skip: nothing else explains one.
+	forkQualServedDivergence = "KNOWN DIVERGENCE L-fixture (ga-0000): the wire has no such member"
+)
+
+var (
+	// The variables that make the served tests run (the two embedded-Dolt
+	// gates) and make a missing run fail (the required gate), set in the env of
+	// the one go test step and nowhere else in the file.
+	forkQualServedGates = []string{"BEADS_TEST_EMBEDDED_DOLT", "BEADS_HTTP_TEST_REQUIRED", "CGO_ENABLED"}
+
+	forkQualServedRoots = []string{"./backend/http", "./internal/httpclient"}
+
+	// Five tests that must be reported PASS: one for each way the tier can be
+	// linked, fenced or run hollow.
+	forkQualServedSentinels = []string{
+		"TestE2E_BDOverHTTP",
+		"TestE2E_PingOverHTTP",
+		"TestServedTierIsLinkedWhenRequired",
+		"TestServedParticipationGenerationFence",
+		"TestServedReadsAndWritesRefuseAfterAPostHandshakeServerSwap",
+	}
+
+	// The logical go test line, word for word.
+	forkQualServedCommand = slices.Concat(
+		[]string{"go", "test", "-tags", "gms_pure_go", "-count=1", "-v", "-timeout=50m"},
+		forkQualServedRoots,
+		[]string{"2>&1", "|", "tee", "$" + forkQualServedLog})
+
+	// The one call the check step makes to go.
+	forkQualServedList = slices.Concat([]string{"list", "-tags", "gms_pure_go"}, forkQualServedRoots)
+)
+
+// forkQualLogicalLines returns the commands of a run script, one per element:
+// comment lines and blank lines are left out and a line ending in a backslash
+// joins the line after it.
+func forkQualLogicalLines(run string) []string {
+	var lines []string
+	var open string
+	for _, line := range forkQualRunLines(run) {
+		line = strings.TrimSpace(line)
+		if strings.HasSuffix(line, `\`) {
+			open += strings.TrimSpace(strings.TrimSuffix(line, `\`)) + " "
+			continue
+		}
+		if line = strings.TrimSpace(open + line); line != "" {
+			lines = append(lines, line)
+		}
+		open = ""
+	}
+	if open = strings.TrimSpace(open); open != "" {
+		lines = append(lines, open)
+	}
+	return lines
+}
+
+// forkQualServedSteps returns the indexes of the served job's go test step (the
+// one step that runs go test) and of its check step (the one step by that
+// name).
+func forkQualServedSteps(t *testing.T, job ciWorkflowJob) (test, check int) {
+	t.Helper()
+	tests := forkQualSteps(job, forkQualRuns("go test"))
+	checks := forkQualSteps(job, func(step ciWorkflowStep) bool { return step.Name == forkQualServedCheck })
+	if len(tests) != 1 {
+		t.Fatalf("job %s has %d steps that run go test, want exactly 1: the step that runs both served packages (ruling be-s847fi section 4.2)", forkQualServedJob, len(tests))
+	}
+	if len(checks) != 1 {
+		t.Fatalf("job %s has %d steps named %q, want exactly 1: the step that fails the job unless the log shows what ran (ruling be-s847fi section 4.3)", forkQualServedJob, len(checks), forkQualServedCheck)
+	}
+	return tests[0], checks[0]
+}
+
+// TestForkQualificationServedJobShape pins the job: its keys, the three
+// variables that make the served tests run and make a missing run fail, the one
+// go test line and the step after it. It works on the parsed YAML, so a comment
+// changes nothing it reads.
+func TestForkQualificationServedJobShape(t *testing.T) {
+	const id = forkQualServedJob
+	wf := forkQualLoad(t)
+	job := wf.job(t, id)
+	node := readYAMLNode(t, filepath.Join(".github", "workflows", forkQualFile))
+
+	// B4: the job carries four keys. A needs, if, continue-on-error, strategy,
+	// container, services, permissions or env at the job level would make the
+	// job optional, wider or differently privileged than the ruling says.
+	prefix := ".jobs." + id + "."
+	var keys []string
+	walkYAML(node, "", func(where string, key bool, _ string) {
+		if rest, ok := strings.CutPrefix(where, prefix); ok && key && !strings.ContainsAny(rest, ".[") {
+			keys = append(keys, rest)
+		}
+	})
+	slices.Sort(keys)
+	if want := []string{"name", "runs-on", "steps", "timeout-minutes"}; !slices.Equal(keys, want) {
+		t.Errorf("job %s has the keys %v, want exactly %v: a job-level needs, if, continue-on-error, strategy, container, services, permissions or env would change what the job is (ruling be-s847fi B4)", id, keys, want)
+	}
+	if job.Name != forkQualServedName {
+		t.Errorf("job %s is named %q, want %q (B1)", id, job.Name, forkQualServedName)
+	}
+	if job.RunsOn != "ubuntu-latest" {
+		t.Errorf("job %s runs on %q, want ubuntu-latest (B2): the tests need a hosted Linux runner with a C toolchain", id, job.RunsOn)
+	}
+	if job.TimeoutMinutes != forkQualServedMins {
+		t.Errorf("job %s has timeout-minutes %d, want %d (B3): a 50 minute go test and a margin, not the platform's 360", id, job.TimeoutMinutes, forkQualServedMins)
+	}
+
+	// B5: six steps, the actions the other jobs of the file already pin, no
+	// Dolt install.
+	wantUses := []string{"actions/checkout", "actions/setup-go", "actions/cache/restore", "actions/cache/restore", "", ""}
+	var gotUses []string
+	for _, step := range job.Steps {
+		gotUses = append(gotUses, actionFamily(step.Uses))
+	}
+	if !slices.Equal(gotUses, wantUses) {
+		t.Fatalf("job %s steps use %q, want %q: checkout, Go setup, the module cache and the build cache restores, the go test step and the check step, and no other (B5: no Dolt install, no new action)", id, gotUses, wantUses)
+	}
+	if with := job.Steps[0].With; len(with) != 0 {
+		t.Errorf("job %s checks out with %v, want the default depth (B5)", id, with)
+	}
+	setupGo := job.Steps[1]
+	if setupGo.ID != "setup-go" || !reflect.DeepEqual(setupGo.With, map[string]string{"go-version-file": "go.mod", "cache": "false"}) {
+		t.Errorf("job %s sets up Go as id %q with %v, want id setup-go, go-version-file go.mod and cache false (the caches are restored by their own steps)", id, setupGo.ID, setupGo.With)
+	}
+
+	testAt, checkAt := forkQualServedSteps(t, job)
+	if testAt != 4 || checkAt != testAt+1 {
+		t.Errorf("job %s runs go test at step %d and %q at step %d, want steps 4 and 5: the check step comes immediately after the step it checks (B7)", id, testAt, forkQualServedCheck, checkAt)
+	}
+	test, check := job.Steps[testAt], job.Steps[checkAt]
+
+	if got := job.Steps[2].With["path"]; !strings.Contains(got, "pkg/mod") {
+		t.Errorf("job %s restores the module cache into %q, want the Go module cache (a path under pkg/mod)", id, got)
+	}
+	if got := job.Steps[3].With["path"]; got != forkQualServedCache || test.Env["GOCACHE"] != got {
+		t.Errorf("job %s restores the build cache into %q and the go test step builds in %q, want both %q: the non-race cache, since the job does not run with -race", id, got, test.Env["GOCACHE"], forkQualServedCache)
+	}
+
+	// B5: the three gates are set in the env of the one go test step, to 1,
+	// and are named nowhere else in the file (a job-level or workflow-level
+	// env, another step, a run script or a called workflow).
+	where := map[string][]string{}
+	walkYAML(node, "", func(path string, _ bool, value string) {
+		for _, gate := range forkQualServedGates {
+			if strings.Contains(value, gate) {
+				where[gate] = append(where[gate], path)
+			}
+		}
+	})
+	for _, gate := range forkQualServedGates {
+		want := fmt.Sprintf(".jobs.%s.steps[%d].env.%s", id, testAt, gate)
+		if got := where[gate]; !slices.Equal(got, []string{want}) {
+			t.Errorf("%s appears at %q, want only at %q: it must be set, in the env of the go test step alone, for the served tests to run and for a missing run to fail", gate, got, want)
+		}
+		if got := test.Env[gate]; got != "1" {
+			t.Errorf("the go test step sets %s to %q, want \"1\"", gate, got)
+		}
+	}
+	wantEnv := slices.Concat(forkQualServedGates, []string{"GOCACHE", forkQualServedLog})
+	slices.Sort(wantEnv)
+	if got := sortedKeys(test.Env); !slices.Equal(got, wantEnv) {
+		t.Errorf("the go test step's env has %v, want %v", got, wantEnv)
+	}
+	if got := test.Env[forkQualServedLog]; got != forkQualServedLogVal {
+		t.Errorf("the go test step's %s = %q, want %q", forkQualServedLog, got, forkQualServedLogVal)
+	}
+	if got := sortedKeys(check.Env); !slices.Equal(got, []string{forkQualServedLog}) || check.Env[forkQualServedLog] != forkQualServedLogVal {
+		t.Errorf("the check step's env is %v, want only %s = %q: it reads the log the go test step wrote and nothing else (K6)", check.Env, forkQualServedLog, forkQualServedLogVal)
+	}
+
+	// B6, B7: both steps are nonoptional and run under bash with a strict
+	// header, and the go test line is the ruled one, word for word.
+	for what, step := range map[string]ciWorkflowStep{"go test": test, "check": check} {
+		if step.If != "" || forkQualContinues(step.ContinueOnError) {
+			t.Errorf("the %s step must be nonoptional (if %q, continue-on-error %v): a skipped or failed-and-ignored step is a run that never happened", what, step.If, step.ContinueOnError)
+		}
+		if step.Shell != "" && step.Shell != "bash" {
+			t.Errorf("the %s step has shell %q, want the default or bash: both scripts are bash", what, step.Shell)
+		}
+		if lines := forkQualLogicalLines(step.Run); len(lines) == 0 || lines[0] != forkQualServedStrict {
+			t.Errorf("the %s step's first command is %q, want %q: without pipefail the tee in the go test line, and without -e the check step's own commands, hide a failure", what, lines, forkQualServedStrict)
+		}
+	}
+	lines := forkQualLogicalLines(test.Run)
+	if len(lines) != 2 {
+		t.Fatalf("the go test step runs %d commands %q, want %q and the one go test line", len(lines), lines, forkQualServedStrict)
+	}
+	if got := forkQualShellWords(lines[1]); !slices.Equal(got, forkQualServedCommand) {
+		t.Errorf("the go test line is\n  %q\nwant\n  %q\n(B6): both packages, -v for the log the check step reads, -count=1, tags gms_pure_go and no -short, -skip, -run, -failfast or -race", got, forkQualServedCommand)
+	}
+}
+
+// forkQualServedShim stands in for go. The check step makes one call, go list,
+// and the shim records it and prints the fixture's import paths; any other call
+// is a failure of the step's contract (K6: it reads the log and the go list
+// output).
+const forkQualServedShim = `#!/bin/bash
+{
+  printf '\001CALL\001\0'
+  for arg in "$@"; do
+    printf '%s\0' "$arg"
+  done
+} >> "$FORK_QUAL_GO_LOG"
+if [ "${1:-}" = list ]; then
+  printf '%s' "$FORK_QUAL_GO_LIST"
+  exit "${FORK_QUAL_GO_LIST_RC:-0}"
+fi
+echo "go shim: unexpected call: go $*" >&2
+exit 97
+`
+
+// A case of the check step: the import paths go list prints, the log the test
+// step left, and what the step must do with them.
+type forkQualServedCase struct {
+	name, why  string
+	list       []string
+	log        string
+	noLog      bool
+	listRC     int
+	passes     bool
+	want, deny []string // text the step prints, and text it must not
+}
+
+func forkQualServedPass(name string) string {
+	return "=== RUN   " + name + "\n--- PASS: " + name + " (0.01s)\n"
+}
+
+func forkQualServedSkip(name, reason string) string {
+	return "=== RUN   " + name + "\n    served_test.go:12: " + reason + "\n--- SKIP: " + name + " (0.00s)\n"
+}
+
+func forkQualServedOK(path, seconds string) string {
+	return "PASS\nok  \t" + path + "\t" + seconds + "s\n"
+}
+
+// forkQualServedGoodLog is what a run that did everything leaves: both packages
+// ok, the five sentinels passed, one top-level skip that is a known divergence,
+// and a skipped subtest that is not top level and so not the step's business.
+var forkQualServedGoodLog = forkQualServedPass(forkQualServedSentinels[0]) +
+	forkQualServedPass(forkQualServedSentinels[1]) +
+	"=== RUN   TestSubtests\n=== RUN   TestSubtests/child\n--- PASS: TestSubtests (0.00s)\n" +
+	"    --- SKIP: TestSubtests/child (0.00s)\n        served_test.go:12: nothing a divergence explains\n" +
+	forkQualServedOK(forkQualServedHTTP, "12.345") +
+	forkQualServedPass(forkQualServedSentinels[2]) +
+	forkQualServedPass(forkQualServedSentinels[3]) +
+	forkQualServedPass(forkQualServedSentinels[4]) +
+	forkQualServedSkip("TestDivergent", forkQualServedDivergence) +
+	forkQualServedOK(forkQualServedClient, "45.678")
+
+func forkQualServedCases(t *testing.T) []forkQualServedCase {
+	t.Helper()
+	good := forkQualServedGoodLog
+	roots := []string{forkQualServedHTTP, forkQualServedClient}
+	short := map[string]string{forkQualServedHTTP: "http", forkQualServedClient: "client"}
+	divergent := forkQualServedSkip("TestDivergent", forkQualServedDivergence)
+	variant := func(old, replacement string) string { return forkQualServedVariant(t, good, old, replacement) }
+	noOK := func(root string) string { return root + ": no ok line" }
+	noSentinel := func(name string) string { return "sentinel " + name + " was not reported PASS" }
+	tally := func(skips, bad int) string { return fmt.Sprintf("top-level skips=%d unexplained=%d", skips, bad) }
+
+	cases := []forkQualServedCase{
+		{name: "good", why: "both packages ok, five sentinels passed, one divergence skip", list: roots, log: good, passes: true,
+			want: []string{tally(1, 0)}},
+		{name: "no-skips", why: "no skip at all", list: roots, log: variant(divergent, ""), passes: true,
+			want: []string{tally(0, 0)}},
+		{name: "two-divergences", why: "two skips that are both known divergences", list: roots,
+			log: variant(divergent, divergent+forkQualServedSkip("TestAlsoDivergent", forkQualServedDivergence)), passes: true,
+			want: []string{tally(2, 0)}},
+		{name: "divergence-under-cont", why: "a parallel test's divergence reported under === CONT", list: roots, passes: true,
+			log: variant(divergent, "=== RUN   TestDivergent\n=== PAUSE TestDivergent\n=== RUN   TestOther\n--- PASS: TestOther (0.00s)\n"+
+				"=== CONT  TestDivergent\n    served_test.go:12: "+forkQualServedDivergence+"\n--- SKIP: TestDivergent (0.00s)\n"),
+			want: []string{tally(1, 0)}},
+		{name: "divergence-under-name", why: "a parallel test's divergence reported under === NAME", list: roots, passes: true,
+			log: variant(divergent, "=== RUN   TestDivergent\n=== PAUSE TestDivergent\n=== RUN   TestOther\n"+
+				"=== NAME  TestDivergent\n    served_test.go:12: "+forkQualServedDivergence+"\n=== NAME  TestOther\n"+
+				"--- PASS: TestOther (0.00s)\n--- SKIP: TestDivergent (0.00s)\n"),
+			want: []string{tally(1, 0)}},
+		{name: "unexplained-skip", why: "a skip no divergence explains, after one that is", list: roots,
+			log:  variant(divergent, divergent+forkQualServedSkip("TestPlain", "needs a thing the runner lacks")),
+			want: []string{"::error::unexplained skip: TestPlain", tally(2, 1)}, deny: []string{"unexplained skip: TestDivergent"}},
+		{name: "count-0", why: "go list printing no package", list: nil, log: good,
+			want: []string{"go list printed 0 packages, want 2"}},
+		{name: "count-1", why: "go list printing one of the two packages, which has its ok line", list: roots[:1], log: good,
+			want: []string{"go list printed 1 packages, want 2"}},
+		{name: "count-3", why: "go list printing a third package, which has its ok line", list: append(slices.Clone(roots), forkQualServedExtra),
+			log: good + forkQualServedOK(forkQualServedExtra, "1.000"), want: []string{"go list printed 3 packages, want 2"}},
+		{name: "list-fails", why: "go list failing", list: nil, listRC: 1, log: good},
+		{name: "no-log", why: "no log at all", list: roots, noLog: true,
+			want: append([]string{noOK(forkQualServedHTTP), noOK(forkQualServedClient)}, mapStrings(forkQualServedSentinels, noSentinel)...)},
+		{name: "empty-log", why: "an empty log", list: roots, log: "",
+			want: append([]string{noOK(forkQualServedHTTP), noOK(forkQualServedClient)}, mapStrings(forkQualServedSentinels, noSentinel)...)},
+		{name: "multi-violation", why: "a missing ok line, a third package without one, a missing sentinel and an unexplained skip",
+			list: append(slices.Clone(roots), forkQualServedExtra),
+			log: forkQualServedVariant(t, variant(forkQualServedOK(forkQualServedHTTP, "12.345"), "FAIL\n"+"FAIL\t"+forkQualServedHTTP+"\t0.500s\n"),
+				forkQualServedPass(forkQualServedSentinels[3]), "") + forkQualServedSkip("TestPlain", "needs a thing the runner lacks"),
+			want: []string{noOK(forkQualServedHTTP), noOK(forkQualServedExtra), "go list printed 3 packages, want 2",
+				noSentinel(forkQualServedSentinels[3]), "::error::unexplained skip: TestPlain"}},
+	}
+
+	for _, root := range roots {
+		ok := forkQualServedOK(root, map[string]string{forkQualServedHTTP: "12.345", forkQualServedClient: "45.678"}[root])
+		parent := path.Dir(root)
+		for kind, line := range map[string]string{
+			"missing": "",
+			"failed":  "FAIL\nFAIL\t" + root + "\t0.500s\n",
+		} {
+			cases = append(cases, forkQualServedCase{name: "no-ok-" + kind + "-" + short[root], why: "no ok line for " + root + " (" + kind + ")",
+				list: roots, log: variant(ok, line), want: []string{noOK(root)}})
+		}
+		cases = append(cases,
+			forkQualServedCase{name: "ok-longer-" + short[root], why: "an ok line for a package that extends " + root, list: roots,
+				log: variant(ok, forkQualServedOK(root+"/extra", "1.000")), want: []string{noOK(root)}},
+			forkQualServedCase{name: "ok-shorter-" + short[root], why: "an ok line for the parent of " + root, list: roots,
+				log: variant(ok, forkQualServedOK(parent, "1.000")), want: []string{noOK(root)}})
+	}
+
+	for _, name := range forkQualServedSentinels {
+		block := forkQualServedPass(name)
+		for kind, replacement := range map[string]string{
+			"skip":     forkQualServedSkip(name, forkQualServedDivergence),
+			"absent":   "",
+			"renamed":  forkQualServedPass(name + "Once"),
+			"indented": "=== RUN   " + name + "\n    --- PASS: " + name + " (0.01s)\n",
+		} {
+			cases = append(cases, forkQualServedCase{name: "sentinel-" + kind + "-" + name, why: "the sentinel " + name + " " + kind,
+				list: roots, log: variant(block, replacement), want: []string{noSentinel(name)}, deny: []string{"unexplained skip: " + name}})
+		}
+	}
+	name := forkQualServedSentinels[0]
+	cases = append(cases, forkQualServedCase{name: "sentinel-unexplained-skip-" + name, why: "the sentinel " + name + " skipped for no divergence",
+		list: roots, log: variant(forkQualServedPass(name), forkQualServedSkip(name, "needs a thing the runner lacks")),
+		want: []string{noSentinel(name), "unexplained skip: " + name}})
+	return cases
+}
+
+// mapStrings returns f applied to each of items.
+func mapStrings(items []string, f func(string) string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, f(item))
+	}
+	return out
+}
+
+// forkQualServedVariant swaps the one occurrence of old in text for
+// replacement: the controls and the cases are built from the committed script
+// and from one good log by exact anchor, so an anchor that has moved fails loudly.
+func forkQualServedVariant(t *testing.T, text, old, replacement string) string {
+	t.Helper()
+	if n := strings.Count(text, old); n != 1 {
+		t.Fatalf("construction: %q occurs %d times in the text it varies, want 1: the served cases and controls work on the committed check step by exact anchor (ruling be-s847fi Appendix B), so change the anchor with the step", old, n)
+	}
+	return strings.Replace(text, old, replacement, 1)
+}
+
+// forkQualServedCheckStep returns the committed check step.
+func forkQualServedCheckStep(t *testing.T) ciWorkflowStep {
+	t.Helper()
+	job := forkQualLoad(t).job(t, forkQualServedJob)
+	_, at := forkQualServedSteps(t, job)
+	return job.Steps[at]
+}
+
+// forkQualRunServed runs the check step's own script in a scratch directory
+// whose only go is the shim and whose only input is the log, and returns what
+// the step got wrong.
+func forkQualRunServed(t *testing.T, bash, scratch string, tc forkQualServedCase, step ciWorkflowStep) []string {
+	t.Helper()
+	dir := filepath.Join(scratch, tc.name)
+	runnerTemp := filepath.Join(dir, "runner-temp")
+	shimDir := filepath.Join(dir, "shim")
+	work := filepath.Join(dir, "work")
+	home := filepath.Join(dir, "home")
+	for _, d := range []string{runnerTemp, shimDir, work, home} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(name, content string, mode os.FileMode) {
+		t.Helper()
+		if err := os.WriteFile(name, []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(shimDir, "go"), forkQualServedShim, 0o755)
+	if !tc.noLog {
+		write(filepath.Join(runnerTemp, "served-http.log"), tc.log, 0o644)
+	}
+	logPath := filepath.Join(runnerTemp, "go-calls")
+	list := strings.Join(tc.list, "\n")
+	if list != "" {
+		list += "\n"
+	}
+
+	strict := func(where, text string) string {
+		t.Helper()
+		text = forkQualWorkspaceExprRe.ReplaceAllLiteralString(text, work)
+		text = forkQualRunnerTempExprRe.ReplaceAllLiteralString(text, runnerTemp)
+		if expr := forkQualExprRe.FindString(text); expr != "" {
+			t.Fatalf("the check step's %s uses %s: the pin evaluates only ${{ github.workspace }} and ${{ runner.temp }}", where, expr)
+		}
+		return text
+	}
+	vars := map[string]string{
+		"HOME": home, "LC_ALL": "C", "RUNNER_TEMP": runnerTemp, "GITHUB_WORKSPACE": work,
+		"PATH":             shimDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"FORK_QUAL_GO_LOG": logPath, "FORK_QUAL_GO_LIST": list, "FORK_QUAL_GO_LIST_RC": fmt.Sprint(tc.listRC),
+	}
+	for key, value := range step.Env {
+		vars[key] = strict("env "+key, value)
+	}
+	var env []string
+	for _, key := range sortedKeys(vars) {
+		env = append(env, key+"="+vars[key])
+	}
+	script := strict("run script", step.Run)
+
+	flags := []string{"--noprofile", "--norc", "-e"}
+	switch step.Shell {
+	case "":
+	case "bash":
+		flags = []string{"--noprofile", "--norc", "-eo", "pipefail"}
+	default:
+		t.Fatalf("the check step has shell: %s; it runs under bash, the one shell the pin evaluates", step.Shell)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bash, append(flags, "-c", script)...)
+	cmd.Dir = work
+	cmd.Env = env
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	code := exitCode(err)
+
+	var found []string
+	bad := func(format string, args ...any) { found = append(found, fmt.Sprintf(format, args...)) }
+	if ctx.Err() != nil {
+		bad("the step did not finish within 60s:\n%s", forkQualTail(out))
+		return found
+	}
+	switch {
+	case tc.passes && code != 0:
+		bad("the step exits %d on %s, want 0:\n%s", code, tc.why, forkQualTail(out))
+	case !tc.passes && code == 0:
+		bad("the step exits 0 on %s, want a failure: a run that is missing or hollow must fail the job\n%s", tc.why, forkQualTail(out))
+	}
+	for _, want := range tc.want {
+		if !strings.Contains(string(out), want) {
+			bad("on %s the step does not print %q:\n%s", tc.why, want, forkQualTail(out))
+		}
+	}
+	for _, deny := range tc.deny {
+		if strings.Contains(string(out), deny) {
+			bad("on %s the step prints %q, which is not true of this log:\n%s", tc.why, deny, forkQualTail(out))
+		}
+	}
+	if calls := forkQualReadCalls(t, logPath); len(calls) != 1 || !slices.Equal(calls[0], forkQualServedList) {
+		bad("on %s the step called go %q, want exactly one call, go %s (K1: the two packages, with the tags the test step builds with)", tc.why, calls, strings.Join(forkQualServedList, " "))
+	}
+	return found
+}
+
+// forkQualServedViolations runs the step over every case, or over the cases
+// whose name contains one of only. A name in only that selects no case is a
+// mistake in the caller, not a pass.
+func forkQualServedViolations(t *testing.T, step ciWorkflowStep, only ...string) []forkQualViolation {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the check step runs under bash with a go shim script")
+	}
+	bash := requireHostTool(t, "bash")
+	requireHostTool(t, "awk")
+	requireHostTool(t, "grep")
+	scratch := t.TempDir()
+	cases := forkQualServedCases(t)
+	picked := func(name string) bool {
+		return len(only) == 0 || slices.ContainsFunc(only, func(part string) bool { return strings.Contains(name, part) })
+	}
+	for _, part := range only {
+		if !slices.ContainsFunc(cases, func(tc forkQualServedCase) bool { return strings.Contains(tc.name, part) }) {
+			t.Fatalf("construction: no case of the check step contains %q", part)
+		}
+	}
+	var violations []forkQualViolation
+	for _, tc := range cases {
+		if !picked(tc.name) {
+			continue
+		}
+		for _, text := range forkQualRunServed(t, bash, scratch, tc, step) {
+			violations = append(violations, forkQualViolation{scenario: tc.name, text: text})
+		}
+	}
+	return violations
+}
+
+// TestForkQualificationServedCheckStep runs the check step's own script, with a
+// go shim, over fixture logs: it passes the log of a run that did everything and
+// fails, naming each fault, every way a run can be missing or hollow (K1 to K4).
+func TestForkQualificationServedCheckStep(t *testing.T) {
+	for _, v := range forkQualServedViolations(t, forkQualServedCheckStep(t)) {
+		t.Error(v)
+	}
+}
+
+// TestForkQualificationServedControls proves that harness can fail: the check
+// step's own script is varied by exact anchor, one fault at a time, and every
+// variant must be rejected by the cases that exist to catch it. The first four
+// are the controls the ruling names (the roots loop, the sentinel loop, the skip
+// check and the final exit); the rest are the ways each of those can be hollowed
+// out without being deleted.
+func TestForkQualificationServedControls(t *testing.T) {
+	step := forkQualServedCheckStep(t)
+	script := step.Run
+	vary := func(pairs ...string) string {
+		t.Helper()
+		out := script
+		for i := 0; i < len(pairs); i += 2 {
+			out = forkQualServedVariant(t, out, pairs[i], pairs[i+1])
+		}
+		return out
+	}
+
+	const (
+		okProgram  = `'$1 == "ok" && $2 == r { f = 1 } END { exit !f }'`
+		sentinelRe = `"^--- PASS: ${name} \("`
+		cleanSkip  = `if (!(t in kd)) { bad++;`
+	)
+	type control struct {
+		name, script string
+		flagged      []string
+	}
+	controls := []control{
+		{"the roots loop never runs", vary(`for root in $roots; do`, `for root in; do`), []string{"no-ok-"}},
+		{"an ok check that cannot fail", vary(okProgram, `'END { exit 0 }'`), []string{"no-ok-", "ok-longer-", "ok-shorter-"}},
+		{"an ok match on a longer path", vary(`$2 == r`, `index($2, r) == 1`), []string{"ok-longer-"}},
+		{"an ok match on a shorter path", vary(`$2 == r`, `index(r, $2) == 1`), []string{"ok-shorter-"}},
+		{"no check of the package count", vary(`if [ "$n" -ne 2 ]; then`, `if false; then`), []string{"count-"}},
+		{"a package count of at least two", vary(`"$n" -ne 2`, `"$n" -lt 2`), []string{"count-3"}},
+		{"the sentinel loop never checks", vary(`if ! grep -q -E `+sentinelRe+` "$SERVED_LOG"; then`, `if false; then`), []string{"sentinel-"}},
+		{"a sentinel pattern that allows indentation", vary(sentinelRe, `"^ *--- PASS: ${name} \("`), []string{"sentinel-indented-"}},
+		{"a sentinel pattern without its closing parenthesis", vary(sentinelRe, `"^--- PASS: ${name}"`), []string{"sentinel-renamed-"}},
+		{"a sentinel that may be skipped", vary(sentinelRe, `"^--- (PASS|SKIP): ${name} \("`), []string{"sentinel-skip-"}},
+		{"a sentinel error that does not fail", vary("was not reported PASS\"\n    bad=1\n", "was not reported PASS\"\n"), []string{"sentinel-absent-"}},
+		{"the skip check never flags", vary(cleanSkip, `if (0) { bad++;`), []string{"unexplained-skip"}},
+		{"one divergence excusing every skip", vary(`kd[cur] = 1`, `kd["*"] = 1`, `if (!(t in kd))`, `if (!("*" in kd))`), []string{"unexplained-skip"}},
+		{"a skip count that includes subtests", vary(`/^--- SKIP: /`, `/--- SKIP: /`), []string{"good"}},
+		{"a divergence only tracked under === RUN", vary(`/^=== (RUN|CONT|NAME) +/`, `/^=== RUN +/`), []string{"divergence-under-"}},
+		{"an awk status the shell ignores", vary(`exit (bad > 0) }`, `exit 0 }`), []string{"unexplained-skip"}},
+		{"no final exit", vary(`exit "$bad"`, `true`), []string{"no-ok-"}},
+		{"an exit at the first fault", vary("test binary did not succeed\"\n    bad=1\n", "test binary did not succeed\"\n    exit 1\n"), []string{"multi-violation"}},
+		{"a tally that is not printed as such", vary(`top-level skips=`, `skips=`), []string{"good"}},
+		{"go list without the build tags", vary(`go list -tags gms_pure_go \`, `go list \`), []string{"good"}},
+		{"go list of one package", vary(`./backend/http ./internal/httpclient)"`, `./backend/http)"`), []string{"good"}},
+	}
+	// Each sentinel in turn left out of the loop, by checking its neighbour twice.
+	for i, name := range forkQualServedSentinels {
+		next := forkQualServedSentinels[(i+1)%len(forkQualServedSentinels)]
+		controls = append(controls, control{"the sentinel " + name + " left out of the loop", vary(name, next), []string{name}})
+	}
+
+	if got := forkQualServedViolations(t, step); len(got) != 0 {
+		t.Fatalf("the committed check step has violations, so a control could not be told from it: %v", got)
+	}
+	for _, c := range controls {
+		t.Run(c.name, func(t *testing.T) {
+			got := forkQualServedViolations(t, ciWorkflowStep{Run: c.script, Env: step.Env, Shell: step.Shell}, c.flagged...)
+			if len(got) == 0 {
+				t.Errorf("%s is not flagged by the cases %q: the check step could do the same and pass", c.name, c.flagged)
 				return
 			}
 			t.Logf("flagged: %s", got[0])

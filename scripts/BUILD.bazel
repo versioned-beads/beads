@@ -30,6 +30,9 @@ load("@rules_go//go:def.bzl", "go_test")
 # MODULE.bazel, every BUILD and .bzl file, tools/bazel and the CI scripts,
 # all in //:repo_other_files (every tracked file but Go and Markdown source),
 # plus the one Go file whose dolt image pin they compare.
+# The test files of this package (:repo_go_test_srcs) are data too: the
+# lane-guards pin (fork_embedded_gated_lane_pin_test.go) reads them to compare
+# its GUARD_TESTS with the guards the package defines.
 go_test(
     name = "scripts_test",
     srcs = [
@@ -54,6 +57,8 @@ go_test(
         "embedded_shard_count_test.go",
         "fork_bazel_evidence_pin_test.go",
         "fork_ci_gate_pin_test.go",
+        "fork_embedded_gate_pin_helpers_test.go",
+        "fork_embedded_gated_lane_pin_test.go",
         "fork_heavy_tiers_pin_test.go",
         "fork_integration_trigger_pin_test.go",
         "fork_macos_dispatcher_test.go",
@@ -74,6 +79,7 @@ go_test(
         "worker_env_autosync_test.go",
     ],  # keep
     data = [
+        ":repo_go_test_srcs",
         "//:repo_other_files",
         "//internal/testutil:testdoltcommon.go",
         "@go_sdk//:bin/go",
@@ -185,15 +191,20 @@ go_test(
     deps = ["//internal/testutil/bazeltest"],
 )
 
-# check-testing-short.sh over every Go file, test and non-test.
+# check-testing-short.sh over every Go file, test and non-test, and the
+# embedded-gate scan (fork_embedded_gate_scan_pin_test.go), which reads them
+# for tests gated on BEADS_TEST_EMBEDDED_DOLT.
 go_test(
     name = "go_sources_test",
     srcs = [
+        "fork_embedded_gate_pin_helpers_test.go",
+        "fork_embedded_gate_scan_pin_test.go",
         "repo_helpers_test.go",
         "testing_short_tree_test.go",
     ],
     data = [
         "check-testing-short.sh",
+        "//:nested_go_modules",
         "//:repo_go_srcs",
         "//:repo_go_test_srcs",
     ],
