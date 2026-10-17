@@ -7,7 +7,7 @@ name: Fork Qualification
 # build that feeds both. Work package W2, be-67atam; ruling be-jvluf7 section
 # 3.5, which supersedes be-4y7b5s where they differ.
 #
-# Three jobs and an aggregator:
+# Four jobs and an aggregator:
 #   build-artifacts  builds this commit's bd once and uploads it as
 #                    fork-build-artifacts. Upstream's artifact name stays
 #                    upstream's; nothing here uploads or downloads it. Lifted
@@ -34,6 +34,15 @@ name: Fork Qualification
 #                    bd inside a Bazel sandbox, so a wider scope would fail every
 #                    test that needs it there, and the census is never a Bazel
 #                    target.
+#   served-http      the served HTTP tier (ruling be-s847fi). The end-to-end
+#                    tests of ./backend/http and ./internal/httpclient skip
+#                    unless an embedded-Dolt gate is set, and no other lane of
+#                    this fork ran them. The job sets the gates in the one step
+#                    that runs both packages under go test -v, together with the
+#                    variable that makes a missing run fail, and a step of its
+#                    own then fails the job unless the log shows both packages
+#                    ok, five named sentinel tests passed and every top-level
+#                    skip a KNOWN DIVERGENCE.
 #
 # "Fork Qualification / Required" fails unless every other job's result is
 # exactly success, skipped included: a skipped qualification job is the silent
@@ -321,6 +330,105 @@ jobs:
           # command; .buildflags exports the same tag through GOFLAGS.
           go test -tags gms_pure_go -p 4 -parallel 4 -race -short -timeout=30m -skip '^TestEmbedded' $packages
 
+  # The served HTTP tier (ruling be-s847fi): the end-to-end tests of
+  # ./backend/http and ./internal/httpclient skip unless an embedded-Dolt gate
+  # is set, and no other lane of this fork ran them. The go test step below sets
+  # the gates and runs both packages under -v; the step after it reads the log
+  # and fails the job unless the run it describes is the run the ruling asks
+  # for: both packages ok, five named sentinel tests passed, and no skip that is
+  # not a KNOWN DIVERGENCE.
+  served-http:
+    name: Fork Served HTTP Tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Go
+        id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: beads-go-mod-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: beads-go-mod-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-
+
+      - name: Restore non-race Go build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-cache/non-race
+          key: beads-go-build-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-base-gms_pure_go-non-race-${{ github.sha }}
+          restore-keys: beads-go-build-v2-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-base-gms_pure_go-non-race-
+
+      - name: Run the served HTTP tests
+        env:
+          # Set on this step alone. The first makes the served tests run (they
+          # skip without it), the second makes a run that cannot happen a
+          # failure instead of a skip, and the third builds with cgo, without
+          # which the end-to-end tests are not compiled in.
+          BEADS_TEST_EMBEDDED_DOLT: '1'
+          BEADS_HTTP_TEST_REQUIRED: '1'
+          CGO_ENABLED: '1'
+          GOCACHE: ${{ runner.temp }}/go-cache/non-race
+          SERVED_LOG: ${{ runner.temp }}/served-http.log
+        run: |
+          set -euo pipefail
+          go test -tags gms_pure_go -count=1 -v -timeout=50m \
+            ./backend/http ./internal/httpclient 2>&1 | tee "$SERVED_LOG"
+
+      - name: Check what ran
+        env:
+          SERVED_LOG: ${{ runner.temp }}/served-http.log
+        run: |
+          set -euo pipefail
+          bad=0
+          roots="$(go list -tags gms_pure_go \
+            ./backend/http ./internal/httpclient)"
+          n=0
+          for root in $roots; do
+            n=$((n + 1))
+            if ! awk -v r="$root" \
+                '$1 == "ok" && $2 == r { f = 1 } END { exit !f }' \
+                "$SERVED_LOG"; then
+              echo "::error::${root}: no ok line, test binary did not succeed"
+              bad=1
+            fi
+          done
+          if [ "$n" -ne 2 ]; then
+            echo "::error::go list printed ${n} packages, want 2"
+            bad=1
+          fi
+          for name in TestE2E_BDOverHTTP TestE2E_PingOverHTTP \
+              TestServedTierIsLinkedWhenRequired \
+              TestServedParticipationGenerationFence \
+              TestServedReadsAndWritesRefuseAfterAPostHandshakeServerSwap; do
+            if ! grep -q -E "^--- PASS: ${name} \(" "$SERVED_LOG"; then
+              echo "::error::sentinel ${name} was not reported PASS"
+              bad=1
+            fi
+          done
+          if summary="$(awk '
+            /^=== (RUN|CONT|NAME) +/ { cur = $3; next }
+            /KNOWN DIVERGENCE/ { kd[cur] = 1; next }
+            /^--- SKIP: / {
+              n++; t = $3
+              if (!(t in kd)) { bad++; print "::error::unexplained skip: " t }
+            }
+            END { printf "top-level skips=%d unexplained=%d\n", n, bad + 0
+                  exit (bad > 0) }
+          ' "$SERVED_LOG")"; then
+            echo "$summary"
+          else
+            echo "$summary"
+            bad=1
+          fi
+          exit "$bad"
+
   # Fails unless every job above succeeded. None of them is conditional, so a
   # skipped result means a need failed or the run was cut short, and that fails
   # the gate too: ci-gate.sh counts skipped as a failure unless the variable is
@@ -333,6 +441,7 @@ jobs:
       - build-artifacts
       - graph-c0
       - replay-census
+      - served-http
     if: ${{ always() }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -344,7 +453,9 @@ jobs:
             BUILD_ARTIFACTS
             GRAPH_C0
             REPLAY_CENSUS
+            SERVED_HTTP
           BUILD_ARTIFACTS: ${{ needs.build-artifacts.result }}
           GRAPH_C0: ${{ needs.graph-c0.result }}
           REPLAY_CENSUS: ${{ needs.replay-census.result }}
+          SERVED_HTTP: ${{ needs.served-http.result }}
         run: bash .github/scripts/ci-gate.sh
