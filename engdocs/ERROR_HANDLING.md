@@ -3,15 +3,22 @@
 Last reviewed: 2026-10-06
 
 Freshness source: `cmd/bd/*.go`, especially command error exits and JSON error
-helpers in `cmd/bd/errors.go`.
+helpers in `cmd/bd/errors.go` and the graph admission path in
+`cmd/bd/graph_preview.go`.
 
-This document describes the error handling patterns used throughout the beads codebase and provides guidelines for when each pattern should be applied.
+This document describes the ordinary CLI's error handling patterns and gives
+guidelines for choosing among them. Graph-mode commands additionally use the
+typed `graphFailure` contract in `cmd/bd/graph_preview.go`; its exit categories
+and stderr envelope are specified in the
+[Graph CLI Specification (Draft)](../docs/reference/graph-cli-specification-draft.md#results-errors-and-repeatability).
+Do not translate a graph refusal into an ordinary `HandleError` exit 1 or a
+success-shaped JSON result.
 
 ## Overview
 
 The beads codebase currently uses **three distinct error handling patterns** across different scenarios. Understanding when to use each pattern is critical for maintaining consistent behavior and a good user experience.
 
-## The Three Patterns
+## The Three Ordinary CLI Patterns
 
 ### Pattern A: Return a Fatal Error Through `RunE` (`return HandleError(...)`)
 
@@ -89,6 +96,9 @@ if err := createConfigYaml(beadsDir, false, ""); err != nil {
 - `cmd/bd/init.go` (search for `Warning:`)
 - `cmd/bd/sync_push_pull.go` (search for `Warning:`)
 - `cmd/bd/create.go`, `cmd/bd/gc.go` (search for `WarnError(`)
+
+These auxiliary failures can be reported without hiding a failed core
+operation.
 
 ---
 
