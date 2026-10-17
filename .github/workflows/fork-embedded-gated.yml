@@ -1,0 +1,133 @@
+name: Fork embedded-gated tests
+
+# This repository's own workflow (upstream has no copy, so syncs never conflict
+# on it; rule M1, be-6i64d8). A test gated on BEADS_TEST_EMBEDDED_DOLT=1 skips
+# silently wherever that variable is unset, and the only lanes that set it are
+# the embedded shards of cmd/bd and internal/storage/embeddeddolt (PR Risk's
+# Embedded Dolt jobs and their Bazel twins). cmd/bd/doctor holds two gated
+# tests that no shard selects, so on every pull request they ended as skips
+# and a green check meant nothing. The doctor-embedded job runs exactly those
+# tests with the gate set and fails unless each one is reported PASS by name
+# (be-zbhceo). The lane-guards job runs the tests that pin these lanes and
+# fails unless each one is reported PASS by name too.
+#
+# It runs beside pr.yml and pr-risk.yml, not inside them. It is not in CI
+# Gate's needs, so it can neither delay nor fail that gate; read its result as
+# the signal it is. scripts/fork_embedded_gated_lane_pin_test.go pins its two
+# lanes, and scripts/fork_embedded_gate_scan_pin_test.go fails when a package
+# gains a gated test that no lane runs.
+
+on:
+  pull_request:
+    branches: [ integration ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BD_DISABLE_METRICS: "1"
+  BD_DISABLE_EVENT_FLUSH: "1"
+
+jobs:
+  # The embedded store these tests open runs inside the test process, so the job
+  # needs no dolt binary and no pulled image: the package's TestMain looks for a
+  # Dolt container, warns and carries on when there is none, and these tests
+  # never use it. Do not set BEADS_TEST_REQUIRE_DOLT_CONTAINER here; it turns
+  # that warning into a failure. `go test` exits 0 when a selected test skips
+  # (the gate unset) and when no test is selected (both test files are
+  # `//go:build cgo`), which is why the verify step reads the log for each name
+  # instead of trusting the exit status.
+  doctor-embedded:
+    name: Test (Embedded Dolt doctor, gated)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@beads.test"
+
+      - name: Test (gated doctor tests)
+        env:
+          BEADS_TEST_EMBEDDED_DOLT: "1"
+        run: |
+          set -o pipefail
+          go test -tags gms_pure_go -race -count=1 -v -timeout 20m \
+            -run '^(TestCheckMigrationContentSkew_EmbeddedFallback|TestCheckVersionableIssues_EmbeddedStoreAgreesWithTheMint)$' \
+            ./cmd/bd/doctor/ 2>&1 | tee "$RUNNER_TEMP/doctor-gated.log"
+
+      - name: Verify every gated test passed by name
+        env:
+          GATED_TESTS: TestCheckMigrationContentSkew_EmbeddedFallback TestCheckVersionableIssues_EmbeddedStoreAgreesWithTheMint
+        run: |
+          status=0
+          for name in $GATED_TESTS; do
+            if ! grep -E "^--- PASS: ${name} \(" "$RUNNER_TEMP/doctor-gated.log"; then
+              echo "::error::${name} was not reported PASS (skipped, not run or failed)"
+              status=1
+            fi
+          done
+          exit "$status"
+
+  # The pins of these lanes (scripts/fork_embedded_gated_lane_pin_test.go and
+  # scripts/fork_embedded_gate_scan_pin_test.go) also run in Bazel, as
+  # //scripts:scripts_test and //scripts:go_sources_test. A Bazel test log
+  # prints no line for a test that passes, so it does not show that a pin ran,
+  # and a pin that was skipped, renamed or left out of the build looks like one
+  # that passed. This job runs every test of scripts/ whose name starts with
+  # TestForkEmbeddedGate with -v, and fails unless each name in GUARD_TESTS is
+  # reported PASS, which is the by-name proof.
+  # TestForkEmbeddedGateGuardsAreRunByName keeps GUARD_TESTS equal to the tests
+  # of that name in scripts/: a guard added without a line here fails that pin,
+  # which prints the line to add. It is a job of its own because it pins every
+  # lane of this file, so a lane that fails must not hide it, and because it
+  # needs neither the race detector nor the gate.
+  lane-guards:
+    name: Test (fork lane guards, by name)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Test (lane guards)
+        run: |
+          set -o pipefail
+          go test -tags gms_pure_go -count=1 -v -timeout 15m \
+            -run '^TestForkEmbeddedGate' \
+            ./scripts/ 2>&1 | tee "$RUNNER_TEMP/lane-guards.log"
+
+      - name: Verify every guard passed by name
+        env:
+          GUARD_TESTS: |
+            TestForkEmbeddedGateGuardsAreRunByName
+            TestForkEmbeddedGateHasALane
+            TestForkEmbeddedGatedLane
+            TestForkEmbeddedGatedLaneIsUnprivilegedAndOutsideTheGate
+        run: |
+          status=0
+          for name in $GUARD_TESTS; do
+            if ! grep -E "^--- PASS: ${name} \(" "$RUNNER_TEMP/lane-guards.log"; then
+              echo "::error::${name} was not reported PASS (skipped, not run or failed)"
+              status=1
+            fi
+          done
+          exit "$status"
