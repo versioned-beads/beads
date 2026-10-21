@@ -1584,6 +1584,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   just `bd show`'s DESCRIPTION field. An explicit `GLAMOUR_STYLE` override
   still takes priority over the detected background.
 
+- **The prebuilt-binary default-contract test fixture no longer inherits a
+  developer's `TEST_VERBOSE`, `TEST_RUN` or `TEST_COUNT` override.**
+  `scripts/test.sh` turns each into a `-test.v`, `-test.run` or `-test.count`
+  child arg, which broke the fixture's exact default-args assertions. Now
+  filtered the same way as `GO_TEST_PARALLEL` (#7177).
+
 ### Added
 
 - **`POST /v0/beads/issues:batchApply` accepts up to 1000 items, up from 100.**

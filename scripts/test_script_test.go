@@ -528,6 +528,14 @@ func runTestScriptPrebuiltBinary(t *testing.T, repoRoot string, args []string) (
 	// non-nested invocation regardless of the ambient env this test binary
 	// itself happens to be running under.
 	env := append(filterEnv(os.Environ(),
+		// TEST_VERBOSE, TEST_RUN and TEST_COUNT: scripts/test.sh turns each into
+		// -v, -run or -count on this path, so a developer's own export would add
+		// -test.v, -test.run or -test.count to the child args that the
+		// default-contract subtests below assert exactly. Same reason as
+		// TEST_TIMEOUT and GO_TEST_PARALLEL.
+		"TEST_VERBOSE",
+		"TEST_RUN",
+		"TEST_COUNT",
 		"TEST_TIMEOUT",
 		"BEADS_TEST_ENV_ACTIVE",
 		"BEADS_TEST_ENV_ROOT",
