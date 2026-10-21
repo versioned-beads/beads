@@ -366,6 +366,41 @@ func TestTestScriptPrebuiltTestBinaryContract(t *testing.T) {
 		}
 	})
 
+	// The same leak through the other scripts/test.sh knobs that become child
+	// args on the prebuilt-binary branch: TEST_VERBOSE adds -test.v, TEST_RUN
+	// adds -test.run and TEST_COUNT adds -test.count. The fixture asserts the
+	// exact default args, so a developer's own export of any of them must not
+	// reach it.
+	t.Run("isolates the default args from an inherited TEST_VERBOSE override", func(t *testing.T) {
+		t.Setenv("TEST_VERBOSE", "-v")
+		repoRoot := sourceRepoRoot(t)
+		run := runTestScriptWithPrebuiltBinary(t, repoRoot, []string{"./scripts/ci"})
+		wantArgs := []string{"-test.timeout", "25m", "-test.parallel", "4", "-test.paniconexit0"}
+		if strings.Join(run.args, " ") != strings.Join(wantArgs, " ") {
+			t.Fatalf("args = %v, want %v (TEST_VERBOSE=-v leaked into the default-contract fixture)", run.args, wantArgs)
+		}
+	})
+
+	t.Run("isolates the default args from an inherited TEST_RUN override", func(t *testing.T) {
+		t.Setenv("TEST_RUN", ".")
+		repoRoot := sourceRepoRoot(t)
+		run := runTestScriptWithPrebuiltBinary(t, repoRoot, []string{"./scripts/ci"})
+		wantArgs := []string{"-test.timeout", "25m", "-test.parallel", "4", "-test.paniconexit0"}
+		if strings.Join(run.args, " ") != strings.Join(wantArgs, " ") {
+			t.Fatalf("args = %v, want %v (TEST_RUN=. leaked into the default-contract fixture)", run.args, wantArgs)
+		}
+	})
+
+	t.Run("isolates the default args from an inherited TEST_COUNT override", func(t *testing.T) {
+		t.Setenv("TEST_COUNT", "1")
+		repoRoot := sourceRepoRoot(t)
+		run := runTestScriptWithPrebuiltBinary(t, repoRoot, []string{"./scripts/ci"})
+		wantArgs := []string{"-test.timeout", "25m", "-test.parallel", "4", "-test.paniconexit0"}
+		if strings.Join(run.args, " ") != strings.Join(wantArgs, " ") {
+			t.Fatalf("args = %v, want %v (TEST_COUNT=1 leaked into the default-contract fixture)", run.args, wantArgs)
+		}
+	})
+
 	t.Run("refuses more than one package", func(t *testing.T) {
 		repoRoot := sourceRepoRoot(t)
 		output, err := runTestScriptWithPrebuiltBinaryExpectFailure(t, repoRoot, []string{"./scripts/ci", "./scripts"})
