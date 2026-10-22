@@ -30,8 +30,12 @@ import (
 //     fork-build-artifacts. Upstream owns the name ci-build-artifacts, and
 //     pr_lanes_bazel_coverage_test.go fails any pr.yml job that needs a
 //     build-artifacts job, so the fork's copy lives here.
-//   - graph-c0: the real-engines, installed-CLI and BDP qualification, unchanged
-//     apart from the artifact it downloads.
+//   - graph-c0 and its three legs: the real-engines, installed-CLI and BDP
+//     qualification. It was one job; since be-vm7gou (ruling be-jmdn71) it runs as
+//     two storage legs and a rest leg on three runners, each uploading its
+//     evidence, and graph-c0 is their aggregator: it keeps the id, the display
+//     name and the combined artifact the one job had, and checks the legs as one
+//     qualification.
 //   - replay-census: the fork's replay guarantee (C1), rebuilt as a narrow go
 //     test, because nothing at the sync target runs `make ci-pr-core` any more.
 //   - served-http: the served HTTP tier. The end-to-end tests of ./backend/http
@@ -40,8 +44,9 @@ import (
 //     own then fails the job unless the log shows both packages ok, five named
 //     sentinel tests passed and every top-level skip is a KNOWN DIVERGENCE.
 //
-// plus one aggregator, "Fork Qualification / Required", that fails unless every
-// other job's result is exactly success.
+// plus one aggregator, "Fork Qualification / Required", that fails unless the
+// result of each job it waits for is exactly success. It does not wait for the
+// legs: a leg that does not succeed skips graph-c0, and a skipped job fails it.
 //
 // What is pinned, by the acceptance criteria of the bead:
 //
@@ -49,9 +54,18 @@ import (
 //     in ci_workflow_test.go (TestC1PRCoreSetsReplayRequire,
 //     TestC1ReplayRequireIsStepScoped, TestC1NoNewWorkflowFile,
 //     TestC1PRCoreCheckoutCarriesHistory) and are re-pointed at the replay-census
-//     job; TestForkQualificationKeepsGraphCore and
-//     TestGraphC0VerifierPassesAgainstForkQualification pin the graph job, its
-//     timeout and the path scripts/ci/graph-c0-verifier-test.py reads it from;
+//     job; TestForkQualificationKeepsGraphCore (the aggregator),
+//     TestForkQualificationKeepsGraphLegs and
+//     TestForkQualificationGraphNamesStayClearOfTheReaders pin the graph jobs,
+//     their caps and their names, and
+//     TestGraphC0VerifierPassesAgainstForkQualification the verifier tests that
+//     read them from scripts/ci/graph-c0-verifier-test.py;
+//     TestForkQualificationGraphPinsHaveTeeth and
+//     TestForkQualificationGraphLegControlsHaveTeeth prove those pins and the
+//     gate simulation can fail, TestForkQualificationGraphLegsFailTheGate that no
+//     leg ending in failure, cancelled or skipped leaves the gate green, and
+//     TestGraphC0VerifierHoldsTheAggregatorControls that the aggregator's own
+//     script refuses every other way the legs can fall short;
 //     TestForkQualificationBuildArtifactsJob and
 //     TestForkQualificationCensusSetup pin the artifact names and the census
 //     job's setup; the aggregator, the trigger shape and the barred text have
@@ -95,15 +109,29 @@ const (
 	forkQualBinary     = "bd-linux-gms-pure"
 	forkQualBuildPre   = "Fork "
 	forkQualGraphName  = "Graph core / real engines, installed CLI and BDP"
-	forkQualGraphMins  = 90
 	forkQualReplayKey  = "REPLAY_REQUIRE"
 	forkQualVerifier   = "scripts/ci/graph-c0-verifier-test.py"
 	forkQualQualify    = "graph-c0-qualify.py"
 	forkQualPRCore     = "scripts/ci/pr-core.sh"
 	forkQualGate       = ".github/scripts/ci-gate.sh"
 
-	// The one test of the verifier that reads the graph job's timeout, and so
-	// the one that notices the job moving out of pr.yml.
+	// The aggregator's cap, and the ceiling of every graph job's (ruling
+	// be-jmdn71 R4.4 and G3): the old single job's 90 minutes, never raised.
+	forkQualGraphMins    = 10
+	forkQualGraphCeiling = 90
+
+	// What the tools that read this qualification select it by (G6, A7): the
+	// display name containing forkQualGraphReader and the artifact named
+	// forkQualGraphPrefix + the commit. Only the aggregator may match either.
+	forkQualGraphReader = "Graph core"
+	forkQualGraphPrefix = "graph-c0-"
+	forkQualLegPrefix   = "graph-leg-"
+	forkQualSHA         = "${{ github.sha }}"
+
+	// The verifier test that reads the rest leg's timeout out of the workflow file
+	// as plain text, and so notices the job moving or being renamed: the smoke's
+	// deadlines must nest inside it. The leg split and the caps are classes of the
+	// same file (LegSplit, GraphLaneCaps) and run beside it.
 	forkQualVerifierTest = "SmokeDeadlines.test_slow_runner_deadlines_nest_inside_the_job_budget"
 )
 
@@ -114,8 +142,35 @@ var (
 	forkQualNeedsResultRe  = regexp.MustCompile(`\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}`)
 	forkQualExprRe         = regexp.MustCompile(`\$\{\{.*?\}\}`)
 
+	forkQualLegFlagRe = regexp.MustCompile(`--leg\s+(\S+)`)
+	forkQualRanRe     = regexp.MustCompile(`(?m)^Ran (\d+) tests? in `)
+
 	// The jobs the aggregator waits for, sorted.
 	forkQualJobIDs = []string{forkQualBuildJob, forkQualGraphJob, forkQualCensusJob, forkQualServedJob}
+
+	// The graph qualification's legs (ruling be-jmdn71 G1 and G5), each with its
+	// cap in minutes (R4.4 and G3: every cap at or under forkQualGraphCeiling,
+	// none ever raised). graph-c0 waits for the legs and the gate waits for
+	// graph-c0. A leg's --leg value is its id without "graph-" and its artifact is
+	// graph-leg-<leg>-<sha>: the rule the verifier test applies to the constants
+	// block of graph-c0-qualify.py, which holds the pairing of the groups.
+	forkQualLegCaps = map[string]int{"graph-storage-a": 35, "graph-storage-b": 35, "graph-rest": 27}
+	forkQualLegIDs  = sortedKeys(forkQualLegCaps)
+
+	// The ways the legs can fall short that the aggregator's own script refuses
+	// (ruling be-jmdn71 G8, and I1's server count), each with the verifier test
+	// that builds the legs and makes the change. A failed, cancelled or skipped
+	// leg is not here: it never lets graph-c0 run (forkQualGraphResults).
+	forkQualRefusals = []struct{ control, test string }{
+		{"a missing leg", "test_a_leg_artifact_that_is_missing_renamed_or_extra_is_refused"},
+		{"a missing or renamed artifact", "test_a_leg_artifact_that_is_missing_renamed_or_extra_is_refused"},
+		{"a leg-count shortfall", "test_a_leg_artifact_that_is_missing_renamed_or_extra_is_refused"},
+		{"a duplicate group", "test_group_coverage_across_the_storage_legs_is_exact"},
+		{"a root executed 0 or 2 times", "test_every_root_must_run_exactly_once_with_its_required_proof"},
+		{"a discovery-digest mismatch", "test_discovery_must_match_its_digest_its_listing_the_receipt_and_the_other_leg"},
+		{"a receipt with a different commit", "test_a_leg_that_did_not_finish_or_finished_as_another_is_refused"},
+		{"a shared or missing server", "test_a_server_shared_or_missing_across_the_legs_is_refused"},
+	}
 
 	// Text the ruling bars from the file: the same words the other fork-owned
 	// workflows may not carry (fork_heavy_tiers_pin_test.go), plus the upstream
@@ -370,17 +425,336 @@ func TestC1PRCoreCheckoutCarriesHistory(t *testing.T) {
 	}
 }
 
-// The graph job moves here from pr.yml unchanged: it keeps its display name
-// (the verifier test finds the job by that exact line), its timeout, its two
-// qualification steps in their order, and downloads the fork's artifact.
+// The graph qualification moved here from pr.yml and, since be-vm7gou (ruling
+// be-jmdn71), runs as three legs and an aggregator. Every pin below returns the
+// problems it finds in the workflow it is given, so TestForkQualificationGraphPinsHaveTeeth
+// can run it over a workflow with one thing wrong and require it to say so.
+
+// forkQualGraphJobProblems returns what is wrong with a graph job that all four
+// share (G4, G5): a hosted runner, no condition, no way to fail without failing
+// the run, and a cap that is the job's own and under the ceiling.
+func forkQualGraphJobProblems(id string, job ciWorkflowJob, mins int) []string {
+	var problems []string
+	bad := func(format string, args ...any) {
+		problems = append(problems, fmt.Sprintf("job %s %s", id, fmt.Sprintf(format, args...)))
+	}
+	if !forkQualHostedRunnerRe.MatchString(job.RunsOn) {
+		bad("runs on %q, want a GitHub-hosted ubuntu runner (R6 v4 rule 4)", job.RunsOn)
+	}
+	if job.If != "" || job.ContinueOnError {
+		bad("must run unconditionally (if %q, continue-on-error %v): a skipped or optional graph job is the gap this workflow closes", job.If, job.ContinueOnError)
+	}
+	if job.TimeoutMinutes != mins {
+		bad("has timeout-minutes %d, want %d (ruling be-jmdn71 R4.4): the verifier test pins every cap to at least 1.75 times its job's slowest healthy run", job.TimeoutMinutes, mins)
+	}
+	if job.TimeoutMinutes > forkQualGraphCeiling {
+		bad("has timeout-minutes %d, over the %d the one graph job had: no cap is ever raised (G3)", job.TimeoutMinutes, forkQualGraphCeiling)
+	}
+	for _, step := range job.Steps {
+		if forkQualContinues(step.ContinueOnError) {
+			bad("step %q continues on error; no step of a graph job may fail without failing the job", step.Name)
+		}
+	}
+	return problems
+}
+
+// forkQualLegName is the --leg value of a leg's job, and forkQualLegArtifact the
+// artifact the leg uploads and graph-c0 downloads.
+func forkQualLegName(id string) string { return strings.TrimPrefix(id, "graph-") }
+
+func forkQualLegArtifact(id string) string {
+	return forkQualLegPrefix + forkQualLegName(id) + "-" + forkQualSHA
+}
+
+// forkQualDownloadNames returns the sorted names of the artifacts a job downloads.
+func forkQualDownloadNames(job ciWorkflowJob) []string {
+	var names []string
+	for _, i := range forkQualSteps(job, forkQualUses("actions/download-artifact")) {
+		names = append(names, job.Steps[i].With["name"])
+	}
+	slices.Sort(names)
+	return names
+}
+
+// forkQualGraphCoreProblems returns what is wrong with graph-c0 as the aggregator
+// (G4, G5): its id, display name and combined artifact are the one job's, it
+// needs the build and exactly the legs, it has no condition (a leg that fails,
+// is cancelled or is skipped must skip it, and the gate fails on a skipped job),
+// it downloads only the legs' artifacts, each by name into a directory of its own,
+// and its one check runs the qualifier as the aggregator before anything is
+// published.
+func forkQualGraphCoreProblems(job ciWorkflowJob) []string {
+	const id = forkQualGraphJob
+	problems := forkQualGraphJobProblems(id, job, forkQualGraphMins)
+	bad := func(format string, args ...any) {
+		problems = append(problems, fmt.Sprintf("job %s %s", id, fmt.Sprintf(format, args...)))
+	}
+	if job.Name != forkQualGraphName {
+		bad("is named %q, want %q verbatim, with no %q prefix: %s finds the job by that name", job.Name, forkQualGraphName, forkQualBuildPre, forkQualVerifier)
+	}
+	needs, want := slices.Clone([]string(job.Needs)), append([]string{forkQualBuildJob}, forkQualLegIDs...)
+	slices.Sort(needs)
+	slices.Sort(want)
+	if !slices.Equal(needs, want) {
+		bad("needs %v, want exactly %v: the build and every leg, so that a leg that does not succeed skips it", needs, want)
+	}
+
+	var artifacts []string
+	for _, leg := range forkQualLegIDs {
+		artifacts = append(artifacts, forkQualLegArtifact(leg))
+	}
+	slices.Sort(artifacts)
+	if got := forkQualDownloadNames(job); !slices.Equal(got, artifacts) {
+		bad("downloads %q, want exactly the legs' artifacts %q, each by its explicit name", got, artifacts)
+	}
+	into := map[string]bool{}
+	for _, i := range forkQualSteps(job, forkQualUses("actions/download-artifact")) {
+		dir := job.Steps[i].With["path"]
+		if dir == "" || into[dir] {
+			bad("step %d downloads %q into %q; give each leg's artifact a directory of its own, or the legs' evidence would merge", i, job.Steps[i].With["name"], dir)
+		}
+		into[dir] = true
+	}
+
+	check := forkQualSteps(job, forkQualRuns(forkQualQualify))
+	if len(check) != 1 {
+		bad("has %d steps that run %s, want exactly 1: the check of the legs", len(check), forkQualQualify)
+		return problems
+	}
+	step := job.Steps[check[0]]
+	if got := forkQualLegFlagRe.FindAllStringSubmatch(strings.Join(forkQualRunLines(step.Run), "\n"), -1); len(got) != 1 || got[0][1] != "aggregate" {
+		bad("check step %q must run %s with --leg aggregate and no other leg", step.Name, forkQualQualify)
+	}
+	if step.If != "" || forkQualContinues(step.ContinueOnError) {
+		bad("check step %q must be nonoptional (if %q, continue-on-error %v): its failure is what fails the aggregator", step.Name, step.If, step.ContinueOnError)
+	}
+	if got := step.Env["GRAPH_COMMIT"]; got != forkQualSHA {
+		bad("check step %q has GRAPH_COMMIT %q, want %q: every leg's receipt is held to the commit under test", step.Name, got, forkQualSHA)
+	}
+	for _, i := range forkQualSteps(job, forkQualUses("actions/download-artifact")) {
+		if i > check[0] {
+			bad("downloads a leg's artifact (step %d) after the check (step %d)", i, check[0])
+		}
+	}
+
+	uploads := forkQualSteps(job, forkQualUses("actions/upload-artifact"))
+	if len(uploads) != 1 {
+		bad("has %d upload-artifact steps, want exactly 1: the combined evidence", len(uploads))
+		return problems
+	}
+	upload := job.Steps[uploads[0]]
+	if got, want := upload.With["name"], forkQualGraphPrefix+forkQualSHA; got != want {
+		bad("uploads %q, want %q: the artifact the one job left, which the reader and the tools that select it by that name expect", got, want)
+	}
+	if upload.With["if-no-files-found"] != "error" {
+		bad("upload has if-no-files-found %q, want \"error\"", upload.With["if-no-files-found"])
+	}
+	if upload.If != "" {
+		bad("upload step has if %q; only an aggregation that passed may leave a combined artifact (a failed run keeps the legs' own)", upload.If)
+	}
+	if uploads[0] < check[0] {
+		bad("uploads (step %d) before it checks (step %d)", uploads[0], check[0])
+	}
+	return problems
+}
+
+// forkQualLegProblems returns what is wrong with one leg (G4, G5): it needs the
+// build alone and downloads only the build's artifact, runs the verifier's
+// negative controls before the qualification, runs its own leg of it, and keeps
+// its evidence even when it fails.
+func forkQualLegProblems(id string, job ciWorkflowJob) []string {
+	problems := forkQualGraphJobProblems(id, job, forkQualLegCaps[id])
+	bad := func(format string, args ...any) {
+		problems = append(problems, fmt.Sprintf("job %s %s", id, fmt.Sprintf(format, args...)))
+	}
+	if !slices.Equal([]string(job.Needs), []string{forkQualBuildJob}) {
+		bad("needs %v, want exactly [%s]: the fork's own build job, not pr.yml's, and never another leg", []string(job.Needs), forkQualBuildJob)
+	}
+	if got := forkQualDownloadNames(job); !slices.Equal(got, []string{forkQualArtifact}) {
+		bad("downloads %q, want exactly [%s] (upstream owns ci-build-artifacts)", got, forkQualArtifact)
+	}
+
+	verifier := forkQualSteps(job, forkQualRuns(path.Base(forkQualVerifier)))
+	qualify := forkQualSteps(job, forkQualRuns(forkQualQualify))
+	if len(verifier) != 1 || len(qualify) != 1 {
+		bad("has %d steps that run %s and %d that run %s, want exactly 1 of each", len(verifier), path.Base(forkQualVerifier), len(qualify), forkQualQualify)
+		return problems
+	}
+	if verifier[0] >= qualify[0] {
+		bad("runs %s (step %d) after %s (step %d); the verifier's negative controls run first, so a broken verifier cannot pass the qualification", path.Base(forkQualVerifier), verifier[0], forkQualQualify, qualify[0])
+	}
+	for _, i := range []int{verifier[0], qualify[0]} {
+		if step := job.Steps[i]; step.If != "" || forkQualContinues(step.ContinueOnError) {
+			bad("step %q must be nonoptional (if %q, continue-on-error %v)", step.Name, step.If, step.ContinueOnError)
+		}
+	}
+	if got := forkQualLegFlagRe.FindAllStringSubmatch(strings.Join(forkQualRunLines(job.Steps[qualify[0]].Run), "\n"), -1); len(got) != 1 || got[0][1] != forkQualLegName(id) {
+		bad("must run %s with --leg %s and no other leg", forkQualQualify, forkQualLegName(id))
+	}
+
+	uploads := forkQualSteps(job, forkQualUses("actions/upload-artifact"))
+	if len(uploads) != 1 {
+		bad("has %d upload-artifact steps, want exactly 1: the leg's evidence", len(uploads))
+		return problems
+	}
+	upload := job.Steps[uploads[0]]
+	if got := forkQualIf(upload.If); got != "always()" {
+		bad("uploads with if %q, want always(): a failed leg must still leave its evidence", upload.If)
+	}
+	if got, want := upload.With["name"], forkQualLegArtifact(id); got != want {
+		bad("uploads %q, want %q: the name graph-c0 downloads", got, want)
+	}
+	if upload.With["if-no-files-found"] != "error" {
+		bad("upload has if-no-files-found %q, want \"error\"", upload.With["if-no-files-found"])
+	}
+	if uploads[0] < qualify[0] {
+		bad("uploads (step %d) before it runs the qualification (step %d)", uploads[0], qualify[0])
+	}
+	return problems
+}
+
+// forkQualGraphNameProblems returns where the workflow's names would collide with
+// what reads the qualification (G6, A7): every download names its artifact and
+// selects none by pattern, only the aggregator has the graph core display name
+// or an artifact called graph-c0-<sha>, and no other job's name or artifact
+// matches what the tools select by. Upstream's test of these rules reads pr.yml
+// only.
+func forkQualGraphNameProblems(wf ciWorkflow) []string {
+	var problems []string
+	bad := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+	var named []string
+	for _, id := range sortedKeys(wf.Jobs) {
+		job := wf.Jobs[id]
+		if job.Name == forkQualGraphName {
+			named = append(named, id)
+		}
+		if id != forkQualGraphJob && strings.Contains(job.Name, forkQualGraphReader) {
+			bad("job %s is named %q; only %s may contain %q, which is what the tools that read the qualification select it by", id, job.Name, forkQualGraphJob, forkQualGraphReader)
+		}
+		for i, step := range job.Steps {
+			switch actionFamily(step.Uses) {
+			case "actions/download-artifact":
+				if step.With["name"] == "" {
+					bad("job %s step %d downloads without an explicit name", id, i)
+				}
+				if _, ok := step.With["pattern"]; ok {
+					bad("job %s step %d downloads by pattern %q; a pattern can take a leg's artifact for another", id, i, step.With["pattern"])
+				}
+			case "actions/upload-artifact":
+				if id != forkQualGraphJob && strings.HasPrefix(step.With["name"], forkQualGraphPrefix) {
+					bad("job %s step %d uploads %q; only %s may upload an artifact called %s*", id, i, step.With["name"], forkQualGraphJob, forkQualGraphPrefix)
+				}
+			}
+		}
+	}
+	if !slices.Equal(named, []string{forkQualGraphJob}) {
+		bad("jobs %v are named %q, want only [%s], the aggregator", named, forkQualGraphName, forkQualGraphJob)
+	}
+	return problems
+}
+
+// forkQualGraphResults returns the result of each job the gate reads when the legs
+// named in legs end as given (any other leg succeeds) and, if graph-c0 gets to
+// run, when its check refuses what the legs left (refused) or passes. It applies
+// GitHub's rules to the parsed workflow: a job with no condition runs only when
+// every job it needs succeeded and is skipped otherwise, and a step that fails
+// fails its job unless it continues on error. A shape it cannot evaluate is an
+// error: the simulation does not guess.
+func forkQualGraphResults(wf ciWorkflow, legs map[string]string, refused bool) (map[string]string, error) {
+	results := map[string]string{forkQualBuildJob: "success", forkQualCensusJob: "success", forkQualServedJob: "success", forkQualGraphJob: "success"}
+	for _, id := range forkQualLegIDs {
+		results[id] = "success"
+		if result, ok := legs[id]; ok {
+			results[id] = result
+		}
+	}
+	core, ok := wf.Jobs[forkQualGraphJob]
+	if !ok {
+		return nil, fmt.Errorf("the workflow has no job %s", forkQualGraphJob)
+	}
+	if condition := forkQualIf(core.If); condition != "" {
+		return nil, fmt.Errorf("job %s has if: %s; the simulation evaluates a job with no condition, whose default success() semantics are what skip it behind a leg that did not succeed (ruling be-jmdn71 G4)", forkQualGraphJob, condition)
+	}
+	for _, need := range core.Needs {
+		result, ok := results[need]
+		if !ok {
+			return nil, fmt.Errorf("job %s needs %s, which the simulation does not know", forkQualGraphJob, need)
+		}
+		if result != "success" {
+			results[forkQualGraphJob] = "skipped"
+		}
+	}
+	if results[forkQualGraphJob] != "success" || !refused {
+		return results, nil
+	}
+	check := forkQualSteps(core, forkQualRuns(forkQualQualify))
+	if len(check) != 1 {
+		return nil, fmt.Errorf("job %s has %d steps that run %s, want exactly 1: the check the simulation makes fail", forkQualGraphJob, len(check), forkQualQualify)
+	}
+	step := core.Steps[check[0]]
+	switch forkQualIf(step.If) {
+	case "", "success()", "always()":
+	default:
+		return nil, fmt.Errorf("job %s step %q has if: %s; the simulation runs the check unconditionally", forkQualGraphJob, step.Name, step.If)
+	}
+	if !forkQualContinues(step.ContinueOnError) {
+		results[forkQualGraphJob] = "failure"
+	}
+	return results, nil
+}
+
+// forkQualLegViolations runs the gate against every way the legs can fall short
+// (G8, A4): each leg failed, cancelled or skipped, and each way the aggregator's
+// own check refuses what the legs left. Each of those must leave the gate red, and
+// legs that all succeeded behind a check that passes must leave it green. What the
+// legs do to graph-c0 comes from the workflow's own needs and conditions.
+func forkQualLegViolations(t *testing.T, bash string, wf ciWorkflow) []string {
+	t.Helper()
+	gateID, gate := forkQualAggregatorJob(t, wf)
+	var violations []string
+	scenario := func(what string, legs map[string]string, refused, green bool) {
+		results, err := forkQualGraphResults(wf, legs, refused)
+		if err != nil {
+			violations = append(violations, fmt.Sprintf("%s: %v", what, err))
+			return
+		}
+		ok, out := forkQualRunAggregator(t, bash, gateID, gate, results)
+		switch {
+		case green && !ok:
+			violations = append(violations, fmt.Sprintf("the gate fails when %s:\n%s", what, out))
+		case !green && ok:
+			violations = append(violations, fmt.Sprintf("the gate passes when %s; it must fail:\n%s", what, out))
+		default:
+			verdict := "fails"
+			if ok {
+				verdict = "passes"
+			}
+			t.Logf("gate %s when %s", verdict, what)
+		}
+	}
+
+	scenario("every leg succeeds and the aggregation holds", nil, false, true)
+	for _, leg := range forkQualLegIDs {
+		for _, result := range []string{"failure", "cancelled", "skipped"} {
+			scenario(fmt.Sprintf("%s ends %s", leg, result), map[string]string{leg: result}, false, false)
+		}
+	}
+	for _, refusal := range forkQualRefusals {
+		scenario("the aggregator refuses "+refusal.control, nil, true, false)
+	}
+	return violations
+}
+
+// The graph core job keeps its id and display name (the verifier test finds it by
+// that exact line, and the tools that read the qualification select it by the
+// name) and the combined artifact, and is the aggregator of the three legs: it
+// does not run the qualification itself.
 func TestForkQualificationKeepsGraphCore(t *testing.T) {
 	data := forkQualRead(t)
-	job := forkQualLoad(t).job(t, forkQualGraphJob)
-	const id = forkQualGraphJob
-
-	if job.Name != forkQualGraphName {
-		t.Errorf("job %s is named %q, want %q verbatim, with no %q prefix: %s finds the job by that name", id, job.Name, forkQualGraphName, forkQualBuildPre, forkQualVerifier)
+	for _, problem := range forkQualGraphCoreProblems(forkQualLoad(t).job(t, forkQualGraphJob)) {
+		t.Error(problem)
 	}
+
 	nameLine := "    name: " + forkQualGraphName
 	count := 0
 	for _, line := range strings.Split(string(data), "\n") {
@@ -390,33 +764,6 @@ func TestForkQualificationKeepsGraphCore(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("%s has %d lines %q, want exactly 1: %s reads the job's timeout by finding that line, so it must occur once, indented as a job's name", forkQualFile, count, nameLine, forkQualVerifier)
-	}
-	if !slices.Equal([]string(job.Needs), []string{forkQualBuildJob}) {
-		t.Errorf("job %s needs %v, want exactly [%s]: the fork's own build job, not pr.yml's", id, []string(job.Needs), forkQualBuildJob)
-	}
-	if job.TimeoutMinutes != forkQualGraphMins {
-		t.Errorf("job %s has timeout-minutes %d, want %d: the verifier test pins the cap to at least 1.75 times the slowest measured job", id, job.TimeoutMinutes, forkQualGraphMins)
-	}
-	if !forkQualHostedRunnerRe.MatchString(job.RunsOn) {
-		t.Errorf("job %s runs on %q, want a GitHub-hosted ubuntu runner (R6 v4 rule 4)", id, job.RunsOn)
-	}
-	if job.If != "" || job.ContinueOnError {
-		t.Errorf("job %s must run unconditionally (if %q, continue-on-error %v): a skipped or optional graph job is the gap this workflow closes", id, job.If, job.ContinueOnError)
-	}
-
-	downloads := forkQualSteps(job, forkQualUses("actions/download-artifact"))
-	if len(downloads) != 1 || job.Steps[downloads[0]].With["name"] != forkQualArtifact {
-		t.Errorf("job %s must download exactly one artifact, named %q (upstream owns ci-build-artifacts); its download steps: %v", id, forkQualArtifact, downloads)
-	}
-	verifier := forkQualOne(t, id, job, "run "+path.Base(forkQualVerifier), forkQualRuns(path.Base(forkQualVerifier)))
-	qualify := forkQualOne(t, id, job, "run "+forkQualQualify, forkQualRuns(forkQualQualify))
-	if verifier >= qualify {
-		t.Errorf("job %s runs %s (step %d) after %s (step %d); the verifier's negative controls run first, so a broken verifier cannot pass the qualification", id, path.Base(forkQualVerifier), verifier, forkQualQualify, qualify)
-	}
-	for _, i := range []int{verifier, qualify} {
-		if step := job.Steps[i]; step.If != "" || forkQualContinues(step.ContinueOnError) {
-			t.Errorf("job %s step %q must be nonoptional (if %q, continue-on-error %v)", id, step.Name, step.If, step.ContinueOnError)
-		}
 	}
 
 	// The job lives here and nowhere else.
@@ -432,11 +779,239 @@ func TestForkQualificationKeepsGraphCore(t *testing.T) {
 	}
 }
 
-// scripts/ci/graph-c0-verifier-test.py reads the graph job's timeout out of the
-// workflow file as plain text. When the job moved out of pr.yml the path in that
-// reader had to follow; this runs the verifier test that reads it (the whole
-// file is 44 tests and the graph job runs it first), and pins that the reader
-// names the new file and not the old one.
+// The legs: whole storage groups on two runners and everything else on a third,
+// each running the verifier's negative controls and then its own leg of the
+// qualification, each keeping its evidence whatever happens, each with the cap
+// of its own slowest run.
+func TestForkQualificationKeepsGraphLegs(t *testing.T) {
+	wf := forkQualLoad(t)
+	for _, id := range forkQualLegIDs {
+		for _, problem := range forkQualLegProblems(id, wf.job(t, id)) {
+			t.Error(problem)
+		}
+	}
+}
+
+// The names the tools that read the qualification select it by belong to the
+// aggregator alone, and no download can pick up a leg's artifact by pattern.
+func TestForkQualificationGraphNamesStayClearOfTheReaders(t *testing.T) {
+	for _, problem := range forkQualGraphNameProblems(forkQualLoad(t)) {
+		t.Error(problem)
+	}
+}
+
+// forkQualMutate loads the workflow afresh and applies change to one of its jobs.
+func forkQualMutate(t *testing.T, id string, change func(job *ciWorkflowJob)) ciWorkflow {
+	t.Helper()
+	wf := forkQualLoad(t)
+	job := wf.job(t, id)
+	change(&job)
+	wf.Jobs[id] = job
+	return wf
+}
+
+// A pin that cannot fail pins nothing: the workflow, changed in one way at a
+// time, must draw the problem that change deserves, and the real workflow none.
+func TestForkQualificationGraphPinsHaveTeeth(t *testing.T) {
+	const rest, storage = "graph-rest", "graph-storage-a"
+	stepWith := func(job *ciWorkflowJob, match func(ciWorkflowStep) bool, key, value string) {
+		for _, i := range forkQualSteps(*job, match) {
+			job.Steps[i].With[key] = value
+		}
+	}
+	type mutation struct {
+		name   string
+		job    string
+		change func(job *ciWorkflowJob)
+		check  func(wf ciWorkflow) []string
+		want   string // a fragment of the problem the change must draw
+	}
+	coreCheck := func(wf ciWorkflow) []string { return forkQualGraphCoreProblems(wf.Jobs[forkQualGraphJob]) }
+	legCheck := func(id string) func(wf ciWorkflow) []string {
+		return func(wf ciWorkflow) []string { return forkQualLegProblems(id, wf.Jobs[id]) }
+	}
+	swapSteps := func(job *ciWorkflowJob) {
+		verifier := forkQualSteps(*job, forkQualRuns(path.Base(forkQualVerifier)))[0]
+		qualify := forkQualSteps(*job, forkQualRuns(forkQualQualify))[0]
+		job.Steps[verifier], job.Steps[qualify] = job.Steps[qualify], job.Steps[verifier]
+	}
+
+	mutations := []mutation{
+		{"the aggregator runs whatever its legs did", forkQualGraphJob, func(j *ciWorkflowJob) { j.If = "${{ always() }}" }, coreCheck, "must run unconditionally"},
+		{"the aggregator is optional", forkQualGraphJob, func(j *ciWorkflowJob) { j.ContinueOnError = true }, coreCheck, "must run unconditionally"},
+		{"the aggregator does not wait for a leg", forkQualGraphJob, func(j *ciWorkflowJob) { j.Needs = []string{forkQualBuildJob, "graph-storage-a", "graph-storage-b"} }, coreCheck, "needs ["},
+		{"the aggregator loses its display name", forkQualGraphJob, func(j *ciWorkflowJob) { j.Name = "Graph core" }, coreCheck, "verbatim"},
+		{"the aggregator's cap is raised", forkQualGraphJob, func(j *ciWorkflowJob) { j.TimeoutMinutes = forkQualGraphCeiling + 1 }, coreCheck, "no cap is ever raised"},
+		{"the aggregator leaves the hosted runners", forkQualGraphJob, func(j *ciWorkflowJob) { j.RunsOn = "self-hosted" }, coreCheck, "GitHub-hosted"},
+		{"a leg's artifact is selected by pattern", forkQualGraphJob, func(j *ciWorkflowJob) {
+			stepWith(j, forkQualUses("actions/download-artifact"), "pattern", "graph-leg-*")
+		}, forkQualGraphNameProblems, "by pattern"},
+		{"the aggregator downloads the build instead of a leg", forkQualGraphJob, func(j *ciWorkflowJob) {
+			stepWith(j, func(s ciWorkflowStep) bool {
+				return actionFamily(s.Uses) == "actions/download-artifact" && s.With["name"] == forkQualLegArtifact(rest)
+			}, "name", forkQualArtifact)
+		}, coreCheck, "downloads ["},
+		{"two legs land in one directory", forkQualGraphJob, func(j *ciWorkflowJob) {
+			stepWith(j, forkQualUses("actions/download-artifact"), "path", "${{ runner.temp }}/graph-legs")
+		}, coreCheck, "directory of its own"},
+		{"the aggregator checks as a leg", forkQualGraphJob, func(j *ciWorkflowJob) {
+			j.Steps[forkQualSteps(*j, forkQualRuns(forkQualQualify))[0]].Run = "python3 scripts/ci/graph-c0-qualify.py --leg rest\n"
+		}, coreCheck, "--leg aggregate"},
+		{"the aggregator's check may fail", forkQualGraphJob, func(j *ciWorkflowJob) {
+			j.Steps[forkQualSteps(*j, forkQualRuns(forkQualQualify))[0]].ContinueOnError = true
+		}, coreCheck, "continues on error"},
+		{"the aggregator's check takes another commit", forkQualGraphJob, func(j *ciWorkflowJob) {
+			j.Steps[forkQualSteps(*j, forkQualRuns(forkQualQualify))[0]].Env["GRAPH_COMMIT"] = "main"
+		}, coreCheck, "GRAPH_COMMIT"},
+		{"the combined artifact is renamed", forkQualGraphJob, func(j *ciWorkflowJob) {
+			stepWith(j, forkQualUses("actions/upload-artifact"), "name", "graph-combined-"+forkQualSHA)
+		}, coreCheck, "uploads \"graph-combined-"},
+		{"a refused aggregation still publishes", forkQualGraphJob, func(j *ciWorkflowJob) {
+			j.Steps[forkQualSteps(*j, forkQualUses("actions/upload-artifact"))[0]].If = "${{ always() }}"
+		}, coreCheck, "only an aggregation that passed"},
+
+		{"a leg needs another leg", storage, func(j *ciWorkflowJob) { j.Needs = []string{forkQualBuildJob, rest} }, legCheck(storage), "needs ["},
+		{"a leg runs only sometimes", storage, func(j *ciWorkflowJob) { j.If = "github.event_name == 'pull_request'" }, legCheck(storage), "must run unconditionally"},
+		{"a leg's cap is raised", storage, func(j *ciWorkflowJob) { j.TimeoutMinutes = forkQualLegCaps[storage] + 1 }, legCheck(storage), "want 35"},
+		{"a leg's cap passes the old job's", storage, func(j *ciWorkflowJob) { j.TimeoutMinutes = forkQualGraphCeiling + 1 }, legCheck(storage), "no cap is ever raised"},
+		{"a leg downloads the aggregator's artifact", storage, func(j *ciWorkflowJob) {
+			stepWith(j, forkQualUses("actions/download-artifact"), "name", forkQualGraphPrefix+forkQualSHA)
+		}, legCheck(storage), "downloads ["},
+		{"a leg qualifies before the verifier's controls", rest, swapSteps, legCheck(rest), "after " + forkQualQualify},
+		{"a leg runs another leg", storage, func(j *ciWorkflowJob) {
+			j.Steps[forkQualSteps(*j, forkQualRuns(forkQualQualify))[0]].Run = "python3 scripts/ci/graph-c0-qualify.py --leg rest\n"
+		}, legCheck(storage), "--leg storage-a"},
+		{"a leg's verifier step is optional", rest, func(j *ciWorkflowJob) {
+			j.Steps[forkQualSteps(*j, forkQualRuns(path.Base(forkQualVerifier)))[0]].ContinueOnError = true
+		}, legCheck(rest), "must be nonoptional"},
+		{"a leg keeps its evidence only when it passes", storage, func(j *ciWorkflowJob) {
+			j.Steps[forkQualSteps(*j, forkQualUses("actions/upload-artifact"))[0]].If = ""
+		}, legCheck(storage), "always()"},
+		{"a leg uploads under the aggregator's name", storage, func(j *ciWorkflowJob) {
+			stepWith(j, forkQualUses("actions/upload-artifact"), "name", forkQualGraphPrefix+forkQualSHA)
+		}, legCheck(storage), "uploads \"graph-c0-"},
+
+		{"a leg is named for the graph core", storage, func(j *ciWorkflowJob) { j.Name = "Graph core / storage" }, forkQualGraphNameProblems, "only graph-c0 may contain"},
+		{"a leg takes the aggregator's name", storage, func(j *ciWorkflowJob) { j.Name = forkQualGraphName }, forkQualGraphNameProblems, "want only [graph-c0]"},
+		{"a leg uploads an artifact the tools would select", storage, func(j *ciWorkflowJob) {
+			stepWith(j, forkQualUses("actions/upload-artifact"), "name", forkQualGraphPrefix+"storage-a-"+forkQualSHA)
+		}, forkQualGraphNameProblems, "only graph-c0 may upload"},
+		{"a download names nothing", storage, func(j *ciWorkflowJob) {
+			stepWith(j, forkQualUses("actions/download-artifact"), "name", "")
+		}, forkQualGraphNameProblems, "without an explicit name"},
+		{"a download selects by pattern", rest, func(j *ciWorkflowJob) {
+			stepWith(j, forkQualUses("actions/download-artifact"), "pattern", "fork-*")
+		}, forkQualGraphNameProblems, "by pattern"},
+	}
+
+	wf := forkQualLoad(t)
+	for _, check := range []struct {
+		name string
+		got  []string
+	}{
+		{"graph-c0", forkQualGraphCoreProblems(wf.job(t, forkQualGraphJob))},
+		{"the names", forkQualGraphNameProblems(wf)},
+	} {
+		if len(check.got) != 0 {
+			t.Errorf("the workflow has problems with %s before any change: %v", check.name, check.got)
+		}
+	}
+	for _, id := range forkQualLegIDs {
+		if got := forkQualLegProblems(id, wf.job(t, id)); len(got) != 0 {
+			t.Errorf("the workflow has problems with %s before any change: %v", id, got)
+		}
+	}
+
+	for _, m := range mutations {
+		t.Run(m.name, func(t *testing.T) {
+			var got []string
+			if m.check != nil {
+				got = m.check(forkQualMutate(t, m.job, m.change))
+			}
+			if len(got) == 0 {
+				t.Fatalf("a workflow where %s draws no problem", m.name)
+			}
+			if !strings.Contains(strings.Join(got, "\n"), m.want) {
+				t.Errorf("a workflow where %s draws %q, want a problem containing %q", m.name, got, m.want)
+			}
+		})
+	}
+}
+
+// The gate cannot be made green by a leg that falls short (G4, G8, A4). A leg that
+// fails, is cancelled or is skipped skips graph-c0, which the gate counts as a
+// failure; a leg that is missing, renamed, short, duplicated, forged or for
+// another commit makes the aggregator refuse (TestGraphC0VerifierHoldsTheAggregatorControls
+// runs those refusals), and a failed graph-c0 fails the gate. The gate's own text
+// and ci-gate.sh are not touched: this runs them as they are.
+func TestForkQualificationGraphLegsFailTheGate(t *testing.T) {
+	bash := requireHostTool(t, "bash")
+	for _, v := range forkQualLegViolations(t, bash, forkQualLoad(t)) {
+		t.Error(v)
+	}
+}
+
+// The simulation can fail: a workflow where graph-c0 does not wait for a leg, may
+// fail without failing, or runs whatever its legs did leaves the gate green on a
+// scenario that must be red, or is not one the simulation evaluates.
+func TestForkQualificationGraphLegControlsHaveTeeth(t *testing.T) {
+	bash := requireHostTool(t, "bash")
+	for _, m := range []struct {
+		name   string
+		change func(job *ciWorkflowJob)
+		want   string
+	}{
+		{"graph-c0 does not wait for the rest leg", func(j *ciWorkflowJob) {
+			j.Needs = []string{forkQualBuildJob, "graph-storage-a", "graph-storage-b"}
+		}, "graph-rest ends failure"},
+		{"graph-c0's check may fail", func(j *ciWorkflowJob) {
+			j.Steps[forkQualSteps(*j, forkQualRuns(forkQualQualify))[0]].ContinueOnError = true
+		}, "the aggregator refuses"},
+		{"graph-c0 runs whatever its legs did", func(j *ciWorkflowJob) { j.If = "${{ always() }}" }, "evaluates a job with no condition"},
+	} {
+		t.Run(m.name, func(t *testing.T) {
+			got := forkQualLegViolations(t, bash, forkQualMutate(t, forkQualGraphJob, m.change))
+			if len(got) == 0 || !strings.Contains(strings.Join(got, "\n"), m.want) {
+				t.Errorf("violations %q, want one containing %q", got, m.want)
+			}
+		})
+	}
+}
+
+// forkQualRunVerifier runs the named unittest selectors of the verifier test from
+// the repository root and returns how many tests it ran; it fails the test, and
+// returns 0, if they did not all pass.
+func forkQualRunVerifier(t *testing.T, python string, selectors ...string) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, python, append([]string{forkQualVerifier}, selectors...)...)
+	cmd.Dir = sourceRepoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("python3 %s %s: %v\n%s", forkQualVerifier, strings.Join(selectors, " "), err, out)
+		return 0
+	}
+	ran := forkQualRanRe.FindSubmatch(out)
+	if ran == nil {
+		t.Errorf("python3 %s %s printed no test count:\n%s", forkQualVerifier, strings.Join(selectors, " "), out)
+		return 0
+	}
+	var n int
+	if _, err := fmt.Sscan(string(ran[1]), &n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// scripts/ci/graph-c0-verifier-test.py reads the graph jobs out of the workflow
+// file as plain text: the smoke's deadlines against the rest leg's cap, the leg
+// split against the constants of the qualifier, the caps against their floors.
+// When the job moved out of pr.yml the path in that reader had to follow, and
+// this pins that it names the new file and not the old one. The legs run the whole
+// verifier first, so this runs the tests that read the workflow: the one that
+// reads the rest leg's timeout (the job the smoke runs in), and the classes of the
+// leg split (7 tests) and the caps (2).
 func TestGraphC0VerifierPassesAgainstForkQualification(t *testing.T) {
 	python := requireHostTool(t, "python3")
 	root := sourceRepoRoot(t)
@@ -452,15 +1027,28 @@ func TestGraphC0VerifierPassesAgainstForkQualification(t *testing.T) {
 	// The verifier opens the workflow file; until W2 adds it, say so here and not
 	// through the verifier's traceback.
 	forkQualRead(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, python, forkQualVerifier, forkQualVerifierTest)
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Errorf("python3 %s %s: %v\n%s", forkQualVerifier, forkQualVerifierTest, err, out)
-	} else if !strings.Contains(string(out), "Ran 1 test") {
-		t.Errorf("python3 %s %s ran something other than the one test:\n%s", forkQualVerifier, forkQualVerifierTest, out)
+	const want = 1 + 7 + 2
+	if ran := forkQualRunVerifier(t, python, forkQualVerifierTest, "LegSplit", "GraphLaneCaps"); ran != 0 && ran < want {
+		t.Errorf("the verifier ran %d tests, want at least %d: one of the selectors lost a test", ran, want)
+	}
+}
+
+// The script level of G8: the verifier test builds three good legs, makes each way
+// they can fall short that the aggregator's script must refuse, and requires the
+// refusal, with nothing published. Every control forkQualRefusals names must exist
+// and pass; TestForkQualificationGraphLegsFailTheGate is the other level, where a
+// refusal fails graph-c0 and the gate fails with it.
+func TestGraphC0VerifierHoldsTheAggregatorControls(t *testing.T) {
+	python := requireHostTool(t, "python3")
+	forkQualRead(t)
+	var selectors []string
+	for _, refusal := range forkQualRefusals {
+		if selector := "AggregatorControls." + refusal.test; !slices.Contains(selectors, selector) {
+			selectors = append(selectors, selector)
+		}
+	}
+	if ran := forkQualRunVerifier(t, python, selectors...); ran != 0 && ran != len(selectors) {
+		t.Errorf("the verifier ran %d tests, want the %d that hold the controls %v", ran, len(selectors), selectors)
 	}
 }
 
@@ -503,9 +1091,16 @@ func TestForkQualificationBuildArtifactsJob(t *testing.T) {
 			t.Errorf("%s %s mentions ci-build-artifacts, a name upstream owns; the fork's artifact is %s", forkQualFile, where, forkQualArtifact)
 		}
 	})
+	// Every job downloads the fork's build; the aggregator alone downloads the
+	// legs' evidence instead (TestForkQualificationKeepsGraphCore pins which).
 	for id, other := range wf.Jobs {
 		for _, i := range forkQualSteps(other, forkQualUses("actions/download-artifact")) {
-			if name := other.Steps[i].With["name"]; name != forkQualArtifact {
+			name := other.Steps[i].With["name"]
+			if id == forkQualGraphJob {
+				if !strings.HasPrefix(name, forkQualLegPrefix) {
+					t.Errorf("job %s step %d downloads %q, want one of the legs' artifacts (%s*)", id, i, name, forkQualLegPrefix)
+				}
+			} else if name != forkQualArtifact {
 				t.Errorf("job %s step %d downloads %q, want %q", id, i, name, forkQualArtifact)
 			}
 		}
@@ -573,17 +1168,19 @@ func TestForkQualificationCensusSetup(t *testing.T) {
 	}
 }
 
-// The aggregator's job set: the four jobs and the aggregator, nothing else, and
-// the aggregator needs all four, runs whatever they did, and cannot be made
-// optional.
+// The aggregator's job set: the four jobs of rulings be-jvluf7 section 3.5 and
+// be-s847fi section 4.1, the three legs graph-c0 aggregates, and the aggregator,
+// nothing else, and the aggregator needs the four jobs, runs whatever they did,
+// and cannot be made optional. It does not need the legs: a leg that does not
+// succeed skips graph-c0, which it needs.
 func TestForkQualificationJobSetAndAggregator(t *testing.T) {
 	wf := forkQualLoad(t)
 	aggregatorID, aggregator := forkQualAggregatorJob(t, wf)
 
-	want := append(slices.Clone(forkQualJobIDs), aggregatorID)
+	want := append(append(slices.Clone(forkQualJobIDs), forkQualLegIDs...), aggregatorID)
 	slices.Sort(want)
 	if got := sortedKeys(wf.Jobs); !slices.Equal(got, want) {
-		t.Errorf("%s jobs = %v, want %v: the four jobs of rulings be-jvluf7 section 3.5 and be-s847fi section 4.1, and the aggregator", forkQualFile, got, want)
+		t.Errorf("%s jobs = %v, want %v: the four jobs of rulings be-jvluf7 section 3.5 and be-s847fi section 4.1, the graph qualification's legs (ruling be-jmdn71) and the aggregator", forkQualFile, got, want)
 	}
 	needs := slices.Clone([]string(aggregator.Needs))
 	slices.Sort(needs)

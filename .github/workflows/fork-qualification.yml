@@ -7,7 +7,7 @@ name: Fork Qualification
 # build that feeds both. Work package W2, be-67atam; ruling be-jvluf7 section
 # 3.5, which supersedes be-4y7b5s where they differ.
 #
-# Four jobs and an aggregator:
+# Seven jobs, and an aggregator over them:
 #   build-artifacts  builds this commit's bd once and uploads it as
 #                    fork-build-artifacts. Upstream's artifact name stays
 #                    upstream's; nothing here uploads or downloads it. Lifted
@@ -15,12 +15,32 @@ name: Fork Qualification
 #                    gains the prefix "Fork ", needs and the tier if: are dropped
 #                    (it runs on every pull request), and the artifact is the
 #                    fork's own.
-#   graph-c0         the graph-core job moved here from pr.yml as the fork
-#                    carried it. Its display name, its 90-minute cap and its two
-#                    qualification steps in their order are what
-#                    scripts/ci/graph-c0-verifier-test.py and
-#                    scripts/fork_qualification_pin_test.go find it by. The only
-#                    edit is the artifact it downloads.
+#   graph-storage-a, graph-storage-b, graph-rest
+#                    the graph-core job moved here from pr.yml as the fork
+#                    carried it, run as three legs on three runners so that it
+#                    finishes sooner and proves exactly what it proved as one
+#                    job (be-vm7gou, ruling be-jmdn71). The storage legs run
+#                    whole groups 1 and 4, and 2 and 3, of the four go test
+#                    groups of ./internal/storage/graphstore; the rest leg runs
+#                    everything else, the three cmd/bd groups, the HTTP and BDP
+#                    captures and the Python example included. The split is the
+#                    constants block at the top of scripts/ci/graph-c0-qualify.py,
+#                    and the verifier test holds this file to it. Each leg
+#                    uploads its evidence as graph-leg-<id>-<sha> whether it
+#                    passed or not. Their names carry neither "Graph core" nor
+#                    the graph-c0- prefix: the tools that read this qualification
+#                    select by those two, and only the aggregator may match them.
+#   graph-c0         the aggregator, which keeps the id and the display name the
+#                    graph-core job had. It runs with the default condition, so
+#                    a failed, cancelled or skipped leg skips it and the gate
+#                    below fails on that. It downloads the three leg artifacts
+#                    by their exact names, and the qualifier's --leg aggregate
+#                    mode holds them to the expected leg set, to each leg's own
+#                    completion receipt and to the retained go test output
+#                    before it republishes the evidence as the graph-c0-<sha>
+#                    artifact in the layout the single job had. Its caps and the
+#                    legs' are pinned by scripts/ci/graph-c0-verifier-test.py
+#                    and scripts/fork_qualification_pin_test.go.
 #   replay-census    a census, not a lane. It computes at run time the packages
 #                    of ./internal/replay/... and every package whose test or
 #                    external test imports a path ending /internal/replay/replaytest,
@@ -130,12 +150,116 @@ jobs:
           if-no-files-found: error
 
   # Required graph-core checkpoint, including the installed mixed workflow and
-  # optional-by-default real-engine tests. Never infer this capability from a normal suite with service skips.
-  graph-c0:
-    name: Graph core / real engines, installed CLI and BDP
+  # optional-by-default real-engine tests, in three legs. Never infer this capability from a normal suite with
+  # service skips. The first two run whole storage groups, the third everything else; the aggregator below
+  # checks that together they ran what the one job ran.
+  graph-storage-a:
+    name: Graph qualification / storage groups 1 and 4
     needs: build-artifacts
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fork-build-artifacts
+          path: ${{ runner.temp }}/graph-c0-build
+      - name: Install exact CLI and pinned qualification Dolt
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/graph-c0-bin" "$RUNNER_TEMP/graph-c0-download"
+          cd "$RUNNER_TEMP/graph-c0-build"
+          sha256sum --check SHA256SUMS
+          install -m 0755 bd-linux-gms-pure "$RUNNER_TEMP/graph-c0-bin/bd"
+          cd "$RUNNER_TEMP/graph-c0-download"
+          curl --fail --location --retry 3 --max-time 120 -o dolt.tar.gz \
+            https://github.com/dolthub/dolt/releases/download/v2.1.8/dolt-linux-amd64.tar.gz
+          echo 'f66318f08ed66e409fc39363ae0fff8ce6fbf6dba9f5bac632b91527b9632a74  dolt.tar.gz' | sha256sum --check
+          tar -xzf dolt.tar.gz
+          install -m 0755 dolt-linux-amd64/bin/dolt "$RUNNER_TEMP/graph-c0-bin/dolt"
+      - name: Check required-test verifier negative controls
+        run: python3 scripts/ci/graph-c0-verifier-test.py
+      - name: Run storage groups 1 and 4 of the graph qualification without skips
+        run: |
+          export PATH="$RUNNER_TEMP/graph-c0-bin:$PATH"
+          python3 scripts/ci/graph-c0-qualify.py \
+            --leg storage-a \
+            --bd "$RUNNER_TEMP/graph-c0-bin/bd" \
+            --dolt "$RUNNER_TEMP/graph-c0-bin/dolt" \
+            --artifacts "$RUNNER_TEMP/graph-c0-build" \
+            --output "$RUNNER_TEMP/graph-c0-evidence"
+      - name: Preserve complete and failed leg evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: graph-leg-storage-a-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/graph-c0-evidence/
+            ${{ runner.temp }}/graph-c0-build/build-manifest.txt
+            ${{ runner.temp }}/graph-c0-build/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error
+
+  graph-storage-b:
+    name: Graph qualification / storage groups 2 and 3
+    needs: build-artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fork-build-artifacts
+          path: ${{ runner.temp }}/graph-c0-build
+      - name: Install exact CLI and pinned qualification Dolt
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/graph-c0-bin" "$RUNNER_TEMP/graph-c0-download"
+          cd "$RUNNER_TEMP/graph-c0-build"
+          sha256sum --check SHA256SUMS
+          install -m 0755 bd-linux-gms-pure "$RUNNER_TEMP/graph-c0-bin/bd"
+          cd "$RUNNER_TEMP/graph-c0-download"
+          curl --fail --location --retry 3 --max-time 120 -o dolt.tar.gz \
+            https://github.com/dolthub/dolt/releases/download/v2.1.8/dolt-linux-amd64.tar.gz
+          echo 'f66318f08ed66e409fc39363ae0fff8ce6fbf6dba9f5bac632b91527b9632a74  dolt.tar.gz' | sha256sum --check
+          tar -xzf dolt.tar.gz
+          install -m 0755 dolt-linux-amd64/bin/dolt "$RUNNER_TEMP/graph-c0-bin/dolt"
+      - name: Check required-test verifier negative controls
+        run: python3 scripts/ci/graph-c0-verifier-test.py
+      - name: Run storage groups 2 and 3 of the graph qualification without skips
+        run: |
+          export PATH="$RUNNER_TEMP/graph-c0-bin:$PATH"
+          python3 scripts/ci/graph-c0-qualify.py \
+            --leg storage-b \
+            --bd "$RUNNER_TEMP/graph-c0-bin/bd" \
+            --dolt "$RUNNER_TEMP/graph-c0-bin/dolt" \
+            --artifacts "$RUNNER_TEMP/graph-c0-build" \
+            --output "$RUNNER_TEMP/graph-c0-evidence"
+      - name: Preserve complete and failed leg evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: graph-leg-storage-b-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/graph-c0-evidence/
+            ${{ runner.temp }}/graph-c0-build/build-manifest.txt
+            ${{ runner.temp }}/graph-c0-build/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: error
+
+  graph-rest:
+    name: Graph qualification / CLI groups, HTTP and BDP
+    needs: build-artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 27
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -205,10 +329,11 @@ jobs:
           } 2>&1 | tee "$RUNNER_TEMP/bdp-client-build/build.log"
       - name: Check required-test verifier negative controls
         run: python3 scripts/ci/graph-c0-verifier-test.py
-      - name: Run complete graph and BDP qualification without skips
+      - name: Run the rest of the graph and BDP qualification without skips
         run: |
           export PATH="$RUNNER_TEMP/graph-c0-bin:$PATH"
           python3 scripts/ci/graph-c0-qualify.py \
+            --leg rest \
             --bd "$RUNNER_TEMP/graph-c0-bin/bd" \
             --dolt "$RUNNER_TEMP/graph-c0-bin/dolt" \
             --artifacts "$RUNNER_TEMP/graph-c0-build" \
@@ -216,16 +341,55 @@ jobs:
             --client-manifest "$RUNNER_TEMP/bdp-client-build/client-build.json" \
             --node "$(command -v node)" \
             --output "$RUNNER_TEMP/graph-c0-evidence"
-      - name: Preserve complete and failed qualification evidence
+      - name: Preserve complete and failed leg evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: graph-c0-${{ github.sha }}
+          name: graph-leg-rest-${{ github.sha }}
           path: |
             ${{ runner.temp }}/graph-c0-evidence/
             ${{ runner.temp }}/graph-c0-build/build-manifest.txt
             ${{ runner.temp }}/graph-c0-build/SHA256SUMS
             ${{ runner.temp }}/bdp-client-build/
+          retention-days: 14
+          if-no-files-found: error
+
+  # The graph-core job's id and display name, now the aggregator of the three legs above. It has no condition
+  # of its own: a leg that failed, was cancelled or was skipped skips it, and fork-qualification-gate fails on a
+  # skipped job. Its checks are the qualifier's, so a leg that finished but proved too little fails it too.
+  graph-c0:
+    name: Graph core / real engines, installed CLI and BDP
+    needs: [build-artifacts, graph-storage-a, graph-storage-b, graph-rest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: graph-leg-storage-a-${{ github.sha }}
+          path: ${{ runner.temp }}/graph-legs/graph-leg-storage-a-${{ github.sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: graph-leg-storage-b-${{ github.sha }}
+          path: ${{ runner.temp }}/graph-legs/graph-leg-storage-b-${{ github.sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: graph-leg-rest-${{ github.sha }}
+          path: ${{ runner.temp }}/graph-legs/graph-leg-rest-${{ github.sha }}
+      - name: Check the legs as one graph and BDP qualification
+        env:
+          GRAPH_COMMIT: ${{ github.sha }}
+        run: |
+          python3 scripts/ci/graph-c0-qualify.py \
+            --leg aggregate \
+            --commit "$GRAPH_COMMIT" \
+            --legs-dir "$RUNNER_TEMP/graph-legs" \
+            --output "$RUNNER_TEMP/graph-c0-combined"
+      - name: Preserve the combined qualification evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: graph-c0-${{ github.sha }}
+          path: ${{ runner.temp }}/graph-c0-combined
           retention-days: 14
           if-no-files-found: error
 
