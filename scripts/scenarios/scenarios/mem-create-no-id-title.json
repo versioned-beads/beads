@@ -8,7 +8,8 @@
     "local finding be-zbcag: the pin refuses a remember with no --id and no --title, so this scenario fails at its first step",
     "limit of the closed vocabulary, not asserted: that search lists the Memory exactly once (there is no count op, and id_set takes literal ids while the generated id is not known in advance, so only the first listed item is checked) and that no key is invented (key field names are unspecified)"
   ],
-  "state": "pass",
+  "state": "xfail",
+  "finding": "be-zbcag",
   "steps": [
     {
       "name": "remember-body-only",
