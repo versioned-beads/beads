@@ -1,0 +1,45 @@
+{
+  "id": "mem-empty-body",
+  "title": "An empty body is valid with a non-empty title: recall returns zero bytes, search finds the Memory by title, an absent id is refused not_found, and forget succeeds",
+  "spec": [
+    "#5877 S1",
+    "#5877 R4 (an empty body is valid when the caller supplies a non-empty title)",
+    "#5877 R7 (recall returns the complete body without mixed diagnostics, so an empty body is zero bytes; an address that does not exist is refused)",
+    "#5877 R25"
+  ],
+  "state": "pass",
+  "steps": [
+    {
+      "name": "remember-empty",
+      "argv": ["remember", "", "--id", "beads/scn/empty", "--title", "Empty body", "--json"],
+      "capture": {"E1": {"path": "$.result.revision", "kind": "token"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "recall-empty",
+      "argv": ["recall", "beads/scn/empty"],
+      "expect": [{"op": "exit", "equals": 0}, {"op": "stdout", "empty": true}]
+    },
+    {
+      "name": "search-empty-by-title",
+      "argv": ["memories", "Empty", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/empty"]}
+      ]
+    },
+    {
+      "name": "recall-absent",
+      "argv": ["recall", "beads/scn/absent"],
+      "expect": [
+        {"op": "exit", "nonzero": true},
+        {"op": "stderr_code", "equals": "not_found"}
+      ]
+    },
+    {
+      "name": "forget-empty",
+      "argv": ["forget", "beads/scn/empty", "--if-revision", "${E1}", "--json"],
+      "expect": [{"op": "exit", "equals": 0}]
+    }
+  ]
+}

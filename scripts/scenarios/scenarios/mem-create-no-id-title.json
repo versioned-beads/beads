@@ -1,0 +1,40 @@
+{
+  "id": "mem-create-no-id-title",
+  "title": "A body alone creates a Memory: with no id and no title supplied the result names a generated canonical id and a derived title, recall returns the exact body, and search lists the Memory",
+  "spec": [
+    "#5877 S1 (a developer supplies a Markdown body but no title or key; Beads derives a short title, creates a Memory Bead with a canonical ID and first attributed version, and does not invent a key)",
+    "#5877 R4 (when a non-empty body is supplied without a title, Beads derives a title; a successful remember result identifies the created Memory: its canonical ID and title)",
+    "#5877 R25 (canonical creation does not require or invent keys)",
+    "local finding be-zbcag: the pin refuses a remember with no --id and no --title, so this scenario fails at its first step",
+    "limit of the closed vocabulary, not asserted: that search lists the Memory exactly once (there is no count op, and id_set takes literal ids while the generated id is not known in advance, so only the first listed item is checked) and that no key is invented (key field names are unspecified)"
+  ],
+  "state": "pass",
+  "steps": [
+    {
+      "name": "remember-body-only",
+      "argv": ["remember", "--stdin", "--json"],
+      "stdin": {"name": "P1", "text": "Prefer the standard library over dependency X.\n"},
+      "capture": {
+        "GID": {"path": "$.result.id", "kind": "id"},
+        "GV1": {"path": "$.result.version", "kind": "token"},
+        "GT": {"path": "$.result.properties.title"}
+      },
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "recall-generated-id",
+      "argv": ["recall", "${GID}"],
+      "expect": [{"op": "exit", "equals": 0}, {"op": "stdout", "equals_input": "P1"}]
+    },
+    {
+      "name": "search-generated",
+      "argv": ["memories", "library", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "json_path", "path": "$.result.items[0].id", "equals_capture": "GID"},
+        {"op": "json_path", "path": "$.result.items[0].version", "equals_capture": "GV1"},
+        {"op": "json_path", "path": "$.result.items[0].title", "equals_capture": "GT"}
+      ]
+    }
+  ]
+}

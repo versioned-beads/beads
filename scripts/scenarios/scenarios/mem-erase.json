@@ -1,0 +1,21 @@
+{
+  "id": "mem-erase",
+  "title": "Erase: delete --erase --force makes the Memory must-not-exist and every address answers gone with erasure as the reason (declared gap, not run; the one step is a placeholder because the driver requires a step)",
+  "spec": [
+    "#5877 R5b",
+    "#5877 R31",
+    "#5898 (the settled disappearance model: erase, unlike forget, removes every version and the address answers gone with erasure as the reason; #5877 R25 has forget delete without erasing history)",
+    "be-tatfn item 1"
+  ],
+  "state": "skip",
+  "gap": "be-tatfn#1",
+  "steps": [
+    {
+      "name": "placeholder-remember-erase-target",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/erase", "--title", "Memory to erase", "--json"],
+      "stdin": {"name": "ER1", "text": "This Memory is written so that it can be erased.\n"},
+      "capture": {"ERV1": {"path": "$.result.version", "kind": "token"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    }
+  ]
+}
