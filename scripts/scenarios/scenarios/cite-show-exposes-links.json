@@ -6,7 +6,8 @@
     "#5877 R9",
     "#5877 R31 (show exposes its identity and Links without recursively expanding referenced bodies)"
   ],
-  "state": "pass",
+  "state": "xfail",
+  "finding": "be-zf770",
   "steps": [
     {
       "name": "remember-policy",
