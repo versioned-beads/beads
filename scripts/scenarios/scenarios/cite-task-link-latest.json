@@ -1,0 +1,94 @@
+{
+  "id": "cite-task-link-latest",
+  "title": "A task cites a policy Memory by Link; the Link keeps following the policy's latest state after the policy changes, while the earlier retained version stays readable",
+  "spec": [
+    "#5877 S5",
+    "#5877 R9 (a task reports its Links without expanding target bodies)",
+    "#5877 R18 (an unstated version is latest and follows its target's current state)",
+    "#5877 R21"
+  ],
+  "state": "pass",
+  "steps": [
+    {
+      "name": "remember-policy",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/policy", "--title", "Key rotation policy", "--json"],
+      "stdin": {"name": "P1", "text": "Rotate the signing keys every ninety days.\nPTAIL1"},
+      "capture": {
+        "PV1": {"path": "$.result.version", "kind": "token"},
+        "PREV1": {"path": "$.result.revision", "kind": "token"}
+      },
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "create-task",
+      "argv": ["create", "Security task", "--id", "beads/scn/task", "--json"],
+      "capture": {"TASK_LEGACY_ID": {"path": "$.result.properties.id", "kind": "id"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "link-task-policy",
+      "argv": ["link", "beads/scn/task", "beads/scn/policy", "--resource-type",
+               "https://example.invalid/scenarios/types/preview-related-v2", "--id", "links/t-p", "--json"],
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "links-before",
+      "argv": ["links", "beads/scn/task", "--json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result[*].id", "equals": ["https://example.invalid/scenarios/links/t-p"]},
+        {"op": "contains", "path": "$.result[0].source", "marker": "beads/scn/task"},
+        {"op": "contains", "path": "$.result[0].type", "marker": "types/preview-related-v2"},
+        {"op": "contains", "in": "stdout", "marker": "beads/scn/policy"},
+        {"op": "not_contains", "in": "stdout", "marker": "PTAIL"}
+      ]
+    },
+    {
+      "name": "update-policy",
+      "argv": ["remember", "--stdin", "--update", "beads/scn/policy", "--if-revision", "${PREV1}", "--json"],
+      "stdin": {"name": "P2", "text": "Rotate the signing keys every thirty days.\nPTAIL2"},
+      "capture": {"PV2": {"path": "$.result.memory.version", "kind": "token"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "links-after",
+      "argv": ["links", "beads/scn/task", "--json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result[*].id", "equals": ["https://example.invalid/scenarios/links/t-p"]},
+        {"op": "contains", "path": "$.result[0].source", "marker": "beads/scn/task"},
+        {"op": "contains", "path": "$.result[0].type", "marker": "types/preview-related-v2"},
+        {"op": "contains", "in": "stdout", "marker": "beads/scn/policy"},
+        {"op": "not_contains", "in": "stdout", "marker": "PTAIL"},
+        {"op": "compare",
+         "left": {"step": "links-after", "path": "$.result[0].id"},
+         "right": {"step": "links-before", "path": "$.result[0].id"},
+         "relation": "equal"},
+        {"op": "compare",
+         "left": {"step": "links-after", "path": "$.result[0].source"},
+         "right": {"step": "links-before", "path": "$.result[0].source"},
+         "relation": "equal"},
+        {"op": "compare",
+         "left": {"step": "links-after", "path": "$.result[0].type"},
+         "right": {"step": "links-before", "path": "$.result[0].type"},
+         "relation": "equal"}
+      ]
+    },
+    {
+      "name": "recall-latest",
+      "argv": ["recall", "beads/scn/policy"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "stdout", "equals_input": "P2"}
+      ]
+    },
+    {
+      "name": "recall-pv1",
+      "argv": ["recall", "beads/scn/policy", "--version", "${PV1}"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "stdout", "equals_input": "P1"}
+      ]
+    }
+  ]
+}
