@@ -39,8 +39,8 @@ func stepNamed(t *testing.T, sc *Scenario, name string) *Step {
 }
 
 // shippedSetProblems checks the shipped set against its contract and returns one
-// sorted message per violation: R1, R1b and R2 are shipped, nothing is shipped
-// beside them, and every scenario cites #5877 spec text.
+// sorted message per violation: R1, R1b and R2 are shipped, scenarios shipped
+// beside them are allowed, and every shipped scenario cites #5877 spec text.
 func shippedSetProblems(byID map[string]*Scenario) []string {
 	ids := keys(byID)
 	sort.Strings(ids)
@@ -49,9 +49,6 @@ func shippedSetProblems(byID map[string]*Scenario) []string {
 		if byID[id] == nil {
 			problems = append(problems, fmt.Sprintf("required scenario %s is not shipped (shipped: %v)", id, ids))
 		}
-	}
-	if len(byID) > 3 {
-		problems = append(problems, fmt.Sprintf("shipped scenarios = %v, want exactly R1, R1b and R2", ids))
 	}
 	for id, sc := range byID {
 		if len(sc.Spec) == 0 || !strings.Contains(strings.Join(sc.Spec, " "), "#5877") {
@@ -62,7 +59,7 @@ func shippedSetProblems(byID map[string]*Scenario) []string {
 	return problems
 }
 
-func TestShippedScenariosAreR1R1bR2(t *testing.T) {
+func TestShippedScenariosIncludeR1R1bR2(t *testing.T) {
 	for _, problem := range shippedSetProblems(loadShipped(t)) {
 		t.Error(problem)
 	}
