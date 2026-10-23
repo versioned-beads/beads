@@ -570,22 +570,23 @@ fi
 # This matrix reaches back thirty releases on a tag push, so anything the old
 # binary cannot do has to SKIP rather than fail.
 
-# Failure evidence for step 3 below. A red run used to say only "Wisp mutation
-# did not persist after upgrade": the exit status and output of both commands
-# were thrown away, so a show that errored, a read path that missed a note that
-# was stored, and a write that never landed all looked the same. Nothing here
-# prints unless the step fails, and nothing here retries or relaxes the check.
+# Failure evidence for step 3 below. A red step 3 has to tell three things apart:
+# a bd show that errored, a read path that missed a note that is stored, and a
+# write that never landed. So the exit status and output of bd update and bd show
+# are kept, and a failure prints them with a direct readback of the database.
+# Nothing here prints on a pass, retries, or relaxes the check.
 
 # Run the candidate once and keep what it did instead of discarding it: exit
 # status in CAP_RC, stdout in CAP_OUT, stderr in CAP_ERR. Never fails the caller,
-# so set -e cannot end the scenario before its cleanup and the summary.
+# so set -e cannot end the scenario before its cleanup and the summary; without a
+# scratch file the stderr is dropped and the run goes on.
 cand_capture() {
     local errfile
-    errfile=$(mktemp -t bd-evidence-XXXXXX)
+    errfile=$(mktemp -t bd-evidence-XXXXXX 2>/dev/null) || errfile=/dev/null
     CAP_RC=0
     CAP_OUT=$(cand "$@" 2>"$errfile") || CAP_RC=$?
     CAP_ERR=$(cat "$errfile" 2>/dev/null) || CAP_ERR=""
-    rm -f "$errfile"
+    [ "$errfile" = /dev/null ] || rm -f "$errfile"
 }
 
 # Print a captured stream under a label, indented, or "(empty)" when the command
@@ -611,13 +612,13 @@ with_timeout() {
     fi
 }
 
-# Direct readback of the wisp row: ask the workspace's embedded Dolt database
-# itself, with the dolt CLI and not bd, which notes it stores. It has to run
-# while the workspace still exists. READBACK_STATE is "ok" only when dolt ran and
-# exited 0; "unavailable" when it could not be run at all; "failed" when it
-# exited non-zero, and then nothing it printed counts as evidence either way.
+# Direct readback: run one query against the workspace's embedded Dolt database
+# with the dolt CLI, not bd, to see what is really stored. It has to run while the
+# workspace still exists. READBACK_STATE is "ok" only when dolt ran and exited 0;
+# "unavailable" when it could not be run at all; "failed" when it exited
+# non-zero, and then nothing it printed counts as evidence either way.
 wisp_readback() {
-    local dolt="${DOLT_BIN:-dolt}" db="" dir errfile query quote="'"
+    local query="$1" dolt="${DOLT_BIN:-dolt}" db="" dir errfile
     READBACK_STATE=unavailable
     READBACK_WHY=""
     READBACK_RC=""
@@ -638,12 +639,11 @@ wisp_readback() {
         READBACK_WHY="no embedded Dolt database under $WS/.beads/embeddeddolt"
         return 0
     fi
-    query="SELECT id, notes FROM wisps WHERE id = '${WISP_ID//$quote/$quote$quote}'"
-    errfile=$(mktemp -t bd-evidence-XXXXXX)
+    errfile=$(mktemp -t bd-evidence-XXXXXX 2>/dev/null) || errfile=/dev/null
     READBACK_RC=0
     READBACK_OUT=$(cd "$db" && with_timeout 60 "$dolt" sql -r csv -q "$query" 2>"$errfile") || READBACK_RC=$?
     READBACK_ERR=$(cat "$errfile" 2>/dev/null) || READBACK_ERR=""
-    rm -f "$errfile"
+    [ "$errfile" = /dev/null ] || rm -f "$errfile"
     if [ "$READBACK_RC" -eq 0 ]; then
         READBACK_STATE=ok
     else
@@ -652,11 +652,25 @@ wisp_readback() {
     fi
 }
 
+# Run one readback of the table named by $1 and print what came back, or why
+# nothing did.
+wisp_readback_report() {
+    local label="$1"
+    wisp_readback "$2"
+    if [ "$READBACK_STATE" = unavailable ]; then
+        echo "      direct dolt readback of $label unavailable: $READBACK_WHY"
+    else
+        echo "      direct dolt readback of $label exit status: $READBACK_RC"
+        diag_stream "direct dolt readback of $label stdout" "$READBACK_OUT"
+        diag_stream "direct dolt readback of $label stderr" "$READBACK_ERR"
+    fi
+}
+
 # bd update itself failed: its exit status and output are the whole story. bd
 # show never ran, and a failed write says nothing about what a readback holds,
 # so no class is named here.
 wisp_update_diagnostics() {
-    echo -e "  ${YELLOW}Wisp update diagnostics (printed on failure only)${NC}"
+    echo -e "  ${YELLOW}Wisp update diagnostics${NC}"
     echo "      bd update exit status: $UPDATE_RC"
     diag_stream "bd update stdout" "$UPDATE_OUT"
     diag_stream "bd update stderr" "$UPDATE_ERR"
@@ -664,36 +678,57 @@ wisp_update_diagnostics() {
 }
 
 # bd update exited 0 but the note was not in bd show's stdout. Print both
-# commands' evidence and the direct readback, then name a class only when that
-# evidence establishes it; when the readback cannot be had, say the
-# classification is unresolved instead of guessing.
+# commands' evidence and the direct readbacks, then name a class only when that
+# evidence establishes it. SHOW_ERRORED rests on bd show's exit status alone. The
+# wisps row decides the rest: it holds the note (READ_PATH_MISS, which also needs
+# a bd show that ran to the end), it lacks the note (WRITE_NOT_VISIBLE), or the
+# readback gave no answer and the classification is unresolved instead of a
+# guess. The issues and wisp_events readbacks show where else the write may have
+# gone and never feed that verdict: an event's new_value carries the note text
+# whatever the wisps row holds.
 wisp_mutation_diagnostics() {
-    echo -e "  ${YELLOW}Wisp mutation diagnostics (printed on failure only)${NC}"
+    local quote="'" id visibility wisps_state wisps_why wisps_out
+    id="'${WISP_ID//$quote/$quote$quote}'"
+    echo -e "  ${YELLOW}Wisp mutation diagnostics${NC}"
     echo "      bd update exit status: $UPDATE_RC"
     diag_stream "bd update stdout" "$UPDATE_OUT"
     diag_stream "bd update stderr" "$UPDATE_ERR"
     echo "      bd show exit status: $SHOW_RC"
     diag_stream "bd show stdout" "$SHOW_OUT"
     diag_stream "bd show stderr" "$SHOW_ERR"
-    wisp_readback
-    if [ "$READBACK_STATE" = unavailable ]; then
-        echo "      direct dolt readback unavailable: $READBACK_WHY"
+    wisp_readback_report wisps "SELECT id, notes FROM wisps WHERE id = $id"
+    wisps_state=$READBACK_STATE wisps_why=$READBACK_WHY wisps_out=$READBACK_OUT
+    if [ "$wisps_state" = ok ]; then
+        wisp_readback_report issues "SELECT id, notes FROM issues WHERE id = $id"
+        wisp_readback_report wisp_events "SELECT event_type, created_at, new_value FROM wisp_events WHERE issue_id = $id ORDER BY created_at, id"
+    fi
+    if [ "$wisps_state" != ok ]; then
+        visibility="unresolved (direct dolt readback $wisps_state: $wisps_why)"
+    elif [[ "$wisps_out" == *"$WISP_NOTE"* ]]; then
+        visibility=stored
+    elif [[ "$wisps_out" == *"$WISP_ID"* ]]; then
+        visibility=missing
     else
-        echo "      direct dolt readback exit status: $READBACK_RC"
-        diag_stream "direct dolt readback stdout" "$READBACK_OUT"
-        diag_stream "direct dolt readback stderr" "$READBACK_ERR"
+        visibility="unresolved (direct dolt readback exited 0 but returned no row for $WISP_ID)"
     fi
     if [ "$SHOW_RC" -ne 0 ]; then
         echo "      classification: SHOW_ERRORED (bd show exited with status $SHOW_RC)"
-    elif [ "$READBACK_STATE" != ok ]; then
-        echo "      classification: unresolved (direct dolt readback $READBACK_STATE: $READBACK_WHY)"
-    elif [[ "$READBACK_OUT" == *"$WISP_NOTE"* ]]; then
-        echo "      classification: READ_PATH_MISS (the direct dolt readback holds the notes, bd show did not print them)"
-    elif [[ "$READBACK_OUT" == *"$WISP_ID"* ]]; then
-        echo "      classification: WRITE_NOT_VISIBLE (bd update exited 0, yet the direct dolt readback of the wisp holds no notes)"
-    else
-        echo "      classification: unresolved (direct dolt readback exited 0 but returned no row for $WISP_ID)"
     fi
+    case "$visibility" in
+    missing)
+        echo "      classification: WRITE_NOT_VISIBLE (bd update exited 0, yet the direct dolt readback of the wisp holds no notes)"
+        ;;
+    stored)
+        if [ "$SHOW_RC" -eq 0 ]; then
+            echo "      classification: READ_PATH_MISS (the direct dolt readback holds the notes, bd show did not print them)"
+        fi
+        ;;
+    *)
+        if [ "$SHOW_RC" -eq 0 ]; then
+            echo "      classification: $visibility"
+        fi
+        ;;
+    esac
 }
 
 scenario "Wisp plane survives upgrade (list/ready/blocked/update on migrated wisps)"
@@ -757,9 +792,9 @@ else
     fi
 
     # 3. Wisps must stay writable — this is the storage_class default path.
-    #    Passing still means: bd update exits 0 and bd show's stdout holds the
-    #    note (show's own exit status is not graded). Each command runs once;
-    #    a failure prints the evidence kept above.
+    #    Passing means: bd update exits 0 and bd show's stdout holds the note;
+    #    show's own exit status is not graded. Each command runs once, and a
+    #    failure prints the evidence kept above.
     WISP_NOTE="smoke wisp mutation"
     cand_capture update "$WISP_ID" --notes "$WISP_NOTE"
     UPDATE_RC=$CAP_RC UPDATE_OUT=$CAP_OUT UPDATE_ERR=$CAP_ERR
