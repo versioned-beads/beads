@@ -80,7 +80,12 @@ func acquireBin(t testing.TB) string {
 		}
 		acquire.dir = dir
 		out := filepath.Join(dir, "corpus-acquire")
-		cmd := exec.Command("go", "build", "-o", out, "./scripts/corpus-acquire")
+		goBin, err := replaytest.GoBin()
+		if err != nil {
+			acquire.err = fmt.Errorf("building corpus-acquire from %s: %w", root, err)
+			return
+		}
+		cmd := exec.Command(goBin, "build", "-o", out, "./scripts/corpus-acquire")
 		cmd.Dir = root
 		if b, err := cmd.CombinedOutput(); err != nil {
 			acquire.err = fmt.Errorf("building corpus-acquire from %s: %w\n%s", root, err, b)

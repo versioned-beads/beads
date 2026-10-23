@@ -156,7 +156,10 @@ pointless).`,
 		if cmd.Flags().Changed("status") {
 			status, _ := cmd.Flags().GetString("status")
 			var customStatuses []string
-			if store != nil {
+			// A built-in status is valid whatever the custom vocabulary says,
+			// so only a non-built-in one pays for reading it: over http that
+			// read is a gateway round trip (bts-xpw.3.14.6).
+			if store != nil && !types.Status(status).IsValid() {
 				cs, err := store.GetCustomStatuses(rootCtx)
 				if err != nil {
 					if !jsonOutput {
@@ -1032,7 +1035,7 @@ func updateGuardsFromFlags(cmd *cobra.Command, claimFlag bool, updates map[strin
 	if cmd.Flags().Changed("if-status") {
 		v, _ := cmd.Flags().GetString("if-status")
 		var customStatuses []string
-		if store != nil {
+		if store != nil && !types.Status(v).IsValid() {
 			if cs, csErr := store.GetCustomStatuses(rootCtx); csErr == nil {
 				customStatuses = cs
 			}

@@ -64,6 +64,12 @@ var embeddedGateGaps = map[string]string{
 		"(job bazel-embedded). There is no verified fork-hosted lane; PR126 `Bazel / embedded Dolt tier` was SKIPPED " +
 		"(its if: was not examined). BEADS_HTTP_TEST_REQUIRED=1 turns a missing gate into a failure only in that twin. " +
 		"Gap acknowledged, not closed",
+	"backend/http/corpus": "be-s847fi section 7 acknowledges this gap, in the form of be-adi2q6 D6. Its upstream Bazel twin is " +
+		"//backend/http/corpus:corpus_served_test, which sets BEADS_TEST_EMBEDDED_DOLT=1 and BEADS_HTTP_TEST_REQUIRED=1 and is " +
+		"selected by `bazel test //... --config=embedded` (job bazel-embedded). The gap is that no fork-hosted lane runs it and " +
+		"Scope S does not cover it (S is the served-http job of be-s847fi, limited to backend/http and internal/httpclient). " +
+		"The failure on a missing gate comes from the test code in any lane that sets BEADS_HTTP_TEST_REQUIRED=1. " +
+		"Gap acknowledged, not closed",
 	"internal/httpclient": "be-adi2q6 acknowledges this gap. Its upstream Bazel twin is //internal/httpclient:httpclient_served_test, which sets " +
 		"BEADS_TEST_EMBEDDED_DOLT=1 and BEADS_HTTP_TEST_REQUIRED=1 and is selected by `bazel test //... --config=embedded` " +
 		"(job bazel-embedded). There is no verified fork-hosted lane; PR126 `Bazel / embedded Dolt tier` was SKIPPED " +

@@ -156,7 +156,12 @@ func buildOldWriter(root string) {
 		return
 	}
 	bin := filepath.Join(dir, "bd")
-	cmd := exec.Command("go", "build", "-tags", bdBuildTags, "-o", bin, "./cmd/bd")
+	goBin, err := replaytest.GoBin()
+	if err != nil {
+		oldBuild.err = fmt.Errorf("building bd from %s: %w", oldWriterSHA, err)
+		return
+	}
+	cmd := exec.Command(goBin, "build", "-tags", bdBuildTags, "-o", bin, "./cmd/bd")
 	cmd.Dir = src
 	cmd.Env = baseEnv
 	if out, err := cmd.CombinedOutput(); err != nil {

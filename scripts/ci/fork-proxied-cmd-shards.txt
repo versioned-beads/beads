@@ -233,6 +233,7 @@
 15 10 TestProxiedServerGraph
 15 10 TestProxiedServerIfRevisionCloseWarnsOnForcedOpenChildren
 15 10 TestProxiedServerListComments
+15 10 TestProxiedServerMoleculeLifecycleAgreesOnEveryRoute
 15 10 TestProxiedServerPourRejectsEnumViolatingVar
 15 10 TestProxiedServerReadyB
 15 10 TestProxiedServerSearch
@@ -265,6 +266,7 @@
 15 12 TestProxiedServerMolShow
 15 12 TestProxiedServerQuery
 15 12 TestProxiedServerQuick
+15 12 TestProxiedServerSearchRoutesAgree
 15 12 TestProxiedServerServeDelete
 15 12 TestProxiedServerShow2
 15 12 TestProxiedServerTypes
