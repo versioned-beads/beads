@@ -5,11 +5,9 @@
     "#5877 S1 (a developer supplies a Markdown body but no title or key; Beads derives a short title, creates a Memory Bead with a canonical ID and first attributed version, and does not invent a key)",
     "#5877 R4 (when a non-empty body is supplied without a title, Beads derives a title; a successful remember result identifies the created Memory: its canonical ID and title)",
     "#5877 R25 (canonical creation does not require or invent keys)",
-    "local finding be-zbcag: the pin refuses a remember with no --id and no --title, so this scenario fails at its first step",
     "limit of the closed vocabulary, not asserted: that search lists the Memory exactly once (there is no count op, and id_set takes literal ids while the generated id is not known in advance, so only the first listed item is checked) and that no key is invented (key field names are unspecified)"
   ],
-  "state": "xfail",
-  "finding": "be-zbcag",
+  "state": "pass",
   "steps": [
     {
       "name": "remember-body-only",
