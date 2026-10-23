@@ -1,0 +1,70 @@
+{
+  "id": "mem-search-update-same",
+  "title": "Search then update: a search by a token finds one Memory with its exact version and a bounded excerpt, and updating that same Memory leaves one result under the same id with the new version",
+  "spec": [
+    "#5877 S2 (Beads side: the developer's update changes that same Memory Bead rather than leaving a duplicate)",
+    "#5877 R6 (a match returns an exact address for the selected state, a bounded excerpt and match provenance)",
+    "#5877 R7 (recall returns the complete body without mixed diagnostics)",
+    "#5877 R8 (discovery never expands complete bodies)",
+    "#5877 R14",
+    "out of scope: the generated search-before-writing guidance is agent behavior (#5877 R8, R30: Beads does not decide)"
+  ],
+  "state": "pass",
+  "steps": [
+    {
+      "name": "remember-conv",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/conv", "--title", "Release convention", "--json"],
+      "stdin": {"name": "C1", "text": "TOK1 Release convention: tags are cut from the main branch only, after the full test lane is green.\nLine 01 of the release convention is filler that pads this body past two kibibytes.\nLine 02 of the release convention is filler that pads this body past two kibibytes.\nLine 03 of the release convention is filler that pads this body past two kibibytes.\nLine 04 of the release convention is filler that pads this body past two kibibytes.\nLine 05 of the release convention is filler that pads this body past two kibibytes.\nLine 06 of the release convention is filler that pads this body past two kibibytes.\nLine 07 of the release convention is filler that pads this body past two kibibytes.\nLine 08 of the release convention is filler that pads this body past two kibibytes.\nLine 09 of the release convention is filler that pads this body past two kibibytes.\nLine 10 of the release convention is filler that pads this body past two kibibytes.\nLine 11 of the release convention is filler that pads this body past two kibibytes.\nLine 12 of the release convention is filler that pads this body past two kibibytes.\nLine 13 of the release convention is filler that pads this body past two kibibytes.\nLine 14 of the release convention is filler that pads this body past two kibibytes.\nLine 15 of the release convention is filler that pads this body past two kibibytes.\nLine 16 of the release convention is filler that pads this body past two kibibytes.\nLine 17 of the release convention is filler that pads this body past two kibibytes.\nLine 18 of the release convention is filler that pads this body past two kibibytes.\nLine 19 of the release convention is filler that pads this body past two kibibytes.\nLine 20 of the release convention is filler that pads this body past two kibibytes.\nLine 21 of the release convention is filler that pads this body past two kibibytes.\nLine 22 of the release convention is filler that pads this body past two kibibytes.\nLine 23 of the release convention is filler that pads this body past two kibibytes.\nLine 24 of the release convention is filler that pads this body past two kibibytes.\nLine 25 of the release convention is filler that pads this body past two kibibytes.\nLine 26 of the release convention is filler that pads this body past two kibibytes.\nLine 27 of the release convention is filler that pads this body past two kibibytes.\nLine 28 of the release convention is filler that pads this body past two kibibytes.\nLine 29 of the release convention is filler that pads this body past two kibibytes.\nLine 30 of the release convention is filler that pads this body past two kibibytes.\nLine 31 of the release convention is filler that pads this body past two kibibytes.\nLine 32 of the release convention is filler that pads this body past two kibibytes.\nTAIL1\n"},
+      "capture": {
+        "V1": {"path": "$.result.version", "kind": "token"},
+        "REV1": {"path": "$.result.revision", "kind": "token"},
+        "T1": {"path": "$.result.properties.title"},
+        "ID1": {"path": "$.result.id", "kind": "id"}
+      },
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "search-by-token",
+      "argv": ["memories", "TOK1", "--format", "records-json"],
+      "capture": {"MATCH1": {"path": "$.result.items[0].matchedFields[0]"}},
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/conv"]},
+        {"op": "json_path", "path": "$.result.items[0].version", "equals_capture": "V1"},
+        {"op": "json_path", "path": "$.result.items[0].title", "equals_capture": "T1"},
+        {"op": "not_contains", "marker": "TAIL1", "path": "$.result.items[0].excerpt.text"},
+        {"op": "not_contains", "marker": "TAIL1", "in": "stdout"}
+      ]
+    },
+    {
+      "name": "recall-conv",
+      "argv": ["recall", "beads/scn/conv"],
+      "expect": [{"op": "exit", "equals": 0}, {"op": "stdout", "equals_input": "C1"}]
+    },
+    {
+      "name": "update-conv",
+      "argv": ["update", "beads/scn/conv", "--properties", "{\"title\":\"Release convention\",\"body\":\"TOK1 Release convention, revised: tags are cut from the main branch only, after the full test lane is green and review is approved.\\nTAIL2\\n\"}", "--if-revision", "${REV1}", "--json"],
+      "capture": {"V2": {"path": "$.result.memory.version", "kind": "token"}},
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "compare",
+         "left": {"step": "update-conv", "path": "$.result.memory.id"},
+         "right": {"step": "remember-conv", "path": "$.result.id"},
+         "relation": "equal"},
+        {"op": "compare",
+         "left": {"step": "update-conv", "path": "$.result.memory.version"},
+         "right": {"step": "remember-conv", "path": "$.result.version"},
+         "relation": "differ"}
+      ]
+    },
+    {
+      "name": "search-by-token-again",
+      "argv": ["memories", "TOK1", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/conv"]},
+        {"op": "json_path", "path": "$.result.items[0].version", "equals_capture": "V2"}
+      ]
+    }
+  ]
+}
