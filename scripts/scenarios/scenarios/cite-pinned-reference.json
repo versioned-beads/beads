@@ -1,0 +1,20 @@
+{
+  "id": "cite-pinned-reference",
+  "title": "A pinned Reference keeps identifying the same retained policy state after the policy changes (declared gap, not run; the one step is a placeholder because the driver requires a step)",
+  "spec": [
+    "#5877 S5",
+    "#5877 R18 (a pinned Reference continues to identify the same retained policy state after the policy changes)",
+    "be-tatfn item 9"
+  ],
+  "state": "skip",
+  "gap": "be-tatfn#9",
+  "steps": [
+    {
+      "name": "placeholder-remember-policy",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/policy", "--title", "Key rotation policy", "--json"],
+      "stdin": {"name": "P1", "text": "Rotate the signing keys every ninety days.\nPTAIL1"},
+      "capture": {"PV1": {"path": "$.result.version", "kind": "token"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    }
+  ]
+}

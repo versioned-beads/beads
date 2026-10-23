@@ -1,0 +1,190 @@
+{
+  "id": "recall-cold-search-declared-set",
+  "title": "Cold recall: a search by a declared token returns exactly the declared Memories, once each, with exact versions and no bodies; recall then returns each complete body exactly",
+  "spec": [
+    "#5877 S4",
+    "#5877 R6 (returns each match once; an exact address for the selected state; a documented deterministic order with stable positions; an explicit control returns the complete result set)",
+    "#5877 R7",
+    "#5877 R8 (discovery never expands complete bodies)",
+    "overlap: cmd/bd/graph_preview_memory_reads_workflow_test.go TestGraphPreviewAgentInstructionsWorkflow (fork PR #59) covers a single Memory; this scenario covers the declared multi-Memory set"
+  ],
+  "state": "pass",
+  "steps": [
+    {
+      "name": "remember-m01",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/m01", "--title", "Memory m01 quniq01", "--json"],
+      "stdin": {"name": "B01", "text": "quniq01 Line 01 of m01 is filler that pads this body past two kibibytes. Line 02 of m01 is filler that pads this body past two kibibytes. Line 03 of m01 is filler that pads this body past two kibibytes. Line 04 of m01 is filler that pads this body past two kibibytes. Line 05 of m01 is filler that pads this body past two kibibytes. Line 06 of m01 is filler that pads this body past two kibibytes. Line 07 of m01 is filler that pads this body past two kibibytes. Line 08 of m01 is filler that pads this body past two kibibytes. Line 09 of m01 is filler that pads this body past two kibibytes. Line 10 of m01 is filler that pads this body past two kibibytes. Line 11 of m01 is filler that pads this body past two kibibytes. Line 12 of m01 is filler that pads this body past two kibibytes. Line 13 of m01 is filler that pads this body past two kibibytes. Line 14 of m01 is filler that pads this body past two kibibytes. Line 15 of m01 is filler that pads this body past two kibibytes. Line 16 of m01 is filler that pads this body past two kibibytes. Line 17 of m01 is filler that pads this body past two kibibytes. Line 18 of m01 is filler that pads this body past two kibibytes. Line 19 of m01 is filler that pads this body past two kibibytes. Line 20 of m01 is filler that pads this body past two kibibytes. Line 21 of m01 is filler that pads this body past two kibibytes. Line 22 of m01 is filler that pads this body past two kibibytes. Line 23 of m01 is filler that pads this body past two kibibytes. Line 24 of m01 is filler that pads this body past two kibibytes. Line 25 of m01 is filler that pads this body past two kibibytes. Line 26 of m01 is filler that pads this body past two kibibytes. Line 27 of m01 is filler that pads this body past two kibibytes. Line 28 of m01 is filler that pads this body past two kibibytes. Line 29 of m01 is filler that pads this body past two kibibytes. Line 30 of m01 is filler that pads this body past two kibibytes. Line 31 of m01 is filler that pads this body past two kibibytes. Line 32 of m01 is filler that pads this body past two kibibytes. TAIL01"},
+      "capture": {"V01": {"path": "$.result.version", "kind": "token"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "remember-m02",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/m02", "--title", "Memory m02 qalpha quniq02", "--json"],
+      "stdin": {"name": "B02", "text": "qalpha quniq02 Line 01 of m02 is filler that pads this body past two kibibytes. Line 02 of m02 is filler that pads this body past two kibibytes. Line 03 of m02 is filler that pads this body past two kibibytes. Line 04 of m02 is filler that pads this body past two kibibytes. Line 05 of m02 is filler that pads this body past two kibibytes. Line 06 of m02 is filler that pads this body past two kibibytes. Line 07 of m02 is filler that pads this body past two kibibytes. Line 08 of m02 is filler that pads this body past two kibibytes. Line 09 of m02 is filler that pads this body past two kibibytes. Line 10 of m02 is filler that pads this body past two kibibytes. Line 11 of m02 is filler that pads this body past two kibibytes. Line 12 of m02 is filler that pads this body past two kibibytes. Line 13 of m02 is filler that pads this body past two kibibytes. Line 14 of m02 is filler that pads this body past two kibibytes. Line 15 of m02 is filler that pads this body past two kibibytes. Line 16 of m02 is filler that pads this body past two kibibytes. Line 17 of m02 is filler that pads this body past two kibibytes. Line 18 of m02 is filler that pads this body past two kibibytes. Line 19 of m02 is filler that pads this body past two kibibytes. Line 20 of m02 is filler that pads this body past two kibibytes. Line 21 of m02 is filler that pads this body past two kibibytes. Line 22 of m02 is filler that pads this body past two kibibytes. Line 23 of m02 is filler that pads this body past two kibibytes. Line 24 of m02 is filler that pads this body past two kibibytes. Line 25 of m02 is filler that pads this body past two kibibytes. Line 26 of m02 is filler that pads this body past two kibibytes. Line 27 of m02 is filler that pads this body past two kibibytes. Line 28 of m02 is filler that pads this body past two kibibytes. Line 29 of m02 is filler that pads this body past two kibibytes. Line 30 of m02 is filler that pads this body past two kibibytes. Line 31 of m02 is filler that pads this body past two kibibytes. Line 32 of m02 is filler that pads this body past two kibibytes. TAIL02"},
+      "capture": {
+        "V02": {"path": "$.result.version", "kind": "token"},
+        "T02": {"path": "$.result.properties.title"}
+      },
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "remember-m03",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/m03", "--title", "Memory m03 quniq03", "--json"],
+      "stdin": {"name": "B03", "text": "quniq03 Line 01 of m03 is filler that pads this body past two kibibytes. Line 02 of m03 is filler that pads this body past two kibibytes. Line 03 of m03 is filler that pads this body past two kibibytes. Line 04 of m03 is filler that pads this body past two kibibytes. Line 05 of m03 is filler that pads this body past two kibibytes. Line 06 of m03 is filler that pads this body past two kibibytes. Line 07 of m03 is filler that pads this body past two kibibytes. Line 08 of m03 is filler that pads this body past two kibibytes. Line 09 of m03 is filler that pads this body past two kibibytes. Line 10 of m03 is filler that pads this body past two kibibytes. Line 11 of m03 is filler that pads this body past two kibibytes. Line 12 of m03 is filler that pads this body past two kibibytes. Line 13 of m03 is filler that pads this body past two kibibytes. Line 14 of m03 is filler that pads this body past two kibibytes. Line 15 of m03 is filler that pads this body past two kibibytes. Line 16 of m03 is filler that pads this body past two kibibytes. Line 17 of m03 is filler that pads this body past two kibibytes. Line 18 of m03 is filler that pads this body past two kibibytes. Line 19 of m03 is filler that pads this body past two kibibytes. Line 20 of m03 is filler that pads this body past two kibibytes. Line 21 of m03 is filler that pads this body past two kibibytes. Line 22 of m03 is filler that pads this body past two kibibytes. Line 23 of m03 is filler that pads this body past two kibibytes. Line 24 of m03 is filler that pads this body past two kibibytes. Line 25 of m03 is filler that pads this body past two kibibytes. Line 26 of m03 is filler that pads this body past two kibibytes. Line 27 of m03 is filler that pads this body past two kibibytes. Line 28 of m03 is filler that pads this body past two kibibytes. Line 29 of m03 is filler that pads this body past two kibibytes. Line 30 of m03 is filler that pads this body past two kibibytes. Line 31 of m03 is filler that pads this body past two kibibytes. Line 32 of m03 is filler that pads this body past two kibibytes. TAIL03"},
+      "capture": {"V03": {"path": "$.result.version", "kind": "token"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "remember-m04",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/m04", "--title", "Memory m04 quniq04", "--json"],
+      "stdin": {"name": "B04", "text": "quniq04 Line 01 of m04 is filler that pads this body past two kibibytes. Line 02 of m04 is filler that pads this body past two kibibytes. Line 03 of m04 is filler that pads this body past two kibibytes. Line 04 of m04 is filler that pads this body past two kibibytes. Line 05 of m04 is filler that pads this body past two kibibytes. Line 06 of m04 is filler that pads this body past two kibibytes. Line 07 of m04 is filler that pads this body past two kibibytes. Line 08 of m04 is filler that pads this body past two kibibytes. Line 09 of m04 is filler that pads this body past two kibibytes. Line 10 of m04 is filler that pads this body past two kibibytes. Line 11 of m04 is filler that pads this body past two kibibytes. Line 12 of m04 is filler that pads this body past two kibibytes. Line 13 of m04 is filler that pads this body past two kibibytes. Line 14 of m04 is filler that pads this body past two kibibytes. Line 15 of m04 is filler that pads this body past two kibibytes. Line 16 of m04 is filler that pads this body past two kibibytes. Line 17 of m04 is filler that pads this body past two kibibytes. Line 18 of m04 is filler that pads this body past two kibibytes. Line 19 of m04 is filler that pads this body past two kibibytes. Line 20 of m04 is filler that pads this body past two kibibytes. Line 21 of m04 is filler that pads this body past two kibibytes. Line 22 of m04 is filler that pads this body past two kibibytes. Line 23 of m04 is filler that pads this body past two kibibytes. Line 24 of m04 is filler that pads this body past two kibibytes. Line 25 of m04 is filler that pads this body past two kibibytes. Line 26 of m04 is filler that pads this body past two kibibytes. Line 27 of m04 is filler that pads this body past two kibibytes. Line 28 of m04 is filler that pads this body past two kibibytes. Line 29 of m04 is filler that pads this body past two kibibytes. Line 30 of m04 is filler that pads this body past two kibibytes. Line 31 of m04 is filler that pads this body past two kibibytes. Line 32 of m04 is filler that pads this body past two kibibytes. TAIL04"},
+      "capture": {"V04": {"path": "$.result.version", "kind": "token"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "remember-m05",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/m05", "--title", "Memory m05 qalpha qbravo quniq05",
+               "--json"],
+      "stdin": {"name": "B05", "text": "qalpha qbravo quniq05 Line 01 of m05 is filler that pads this body past two kibibytes. Line 02 of m05 is filler that pads this body past two kibibytes. Line 03 of m05 is filler that pads this body past two kibibytes. Line 04 of m05 is filler that pads this body past two kibibytes. Line 05 of m05 is filler that pads this body past two kibibytes. Line 06 of m05 is filler that pads this body past two kibibytes. Line 07 of m05 is filler that pads this body past two kibibytes. Line 08 of m05 is filler that pads this body past two kibibytes. Line 09 of m05 is filler that pads this body past two kibibytes. Line 10 of m05 is filler that pads this body past two kibibytes. Line 11 of m05 is filler that pads this body past two kibibytes. Line 12 of m05 is filler that pads this body past two kibibytes. Line 13 of m05 is filler that pads this body past two kibibytes. Line 14 of m05 is filler that pads this body past two kibibytes. Line 15 of m05 is filler that pads this body past two kibibytes. Line 16 of m05 is filler that pads this body past two kibibytes. Line 17 of m05 is filler that pads this body past two kibibytes. Line 18 of m05 is filler that pads this body past two kibibytes. Line 19 of m05 is filler that pads this body past two kibibytes. Line 20 of m05 is filler that pads this body past two kibibytes. Line 21 of m05 is filler that pads this body past two kibibytes. Line 22 of m05 is filler that pads this body past two kibibytes. Line 23 of m05 is filler that pads this body past two kibibytes. Line 24 of m05 is filler that pads this body past two kibibytes. Line 25 of m05 is filler that pads this body past two kibibytes. Line 26 of m05 is filler that pads this body past two kibibytes. Line 27 of m05 is filler that pads this body past two kibibytes. Line 28 of m05 is filler that pads this body past two kibibytes. Line 29 of m05 is filler that pads this body past two kibibytes. Line 30 of m05 is filler that pads this body past two kibibytes. Line 31 of m05 is filler that pads this body past two kibibytes. Line 32 of m05 is filler that pads this body past two kibibytes. TAIL05"},
+      "capture": {
+        "V05": {"path": "$.result.version", "kind": "token"},
+        "T05": {"path": "$.result.properties.title"}
+      },
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "remember-m06",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/m06", "--title", "Memory m06 quniq06", "--json"],
+      "stdin": {"name": "B06", "text": "quniq06 Line 01 of m06 is filler that pads this body past two kibibytes. Line 02 of m06 is filler that pads this body past two kibibytes. Line 03 of m06 is filler that pads this body past two kibibytes. Line 04 of m06 is filler that pads this body past two kibibytes. Line 05 of m06 is filler that pads this body past two kibibytes. Line 06 of m06 is filler that pads this body past two kibibytes. Line 07 of m06 is filler that pads this body past two kibibytes. Line 08 of m06 is filler that pads this body past two kibibytes. Line 09 of m06 is filler that pads this body past two kibibytes. Line 10 of m06 is filler that pads this body past two kibibytes. Line 11 of m06 is filler that pads this body past two kibibytes. Line 12 of m06 is filler that pads this body past two kibibytes. Line 13 of m06 is filler that pads this body past two kibibytes. Line 14 of m06 is filler that pads this body past two kibibytes. Line 15 of m06 is filler that pads this body past two kibibytes. Line 16 of m06 is filler that pads this body past two kibibytes. Line 17 of m06 is filler that pads this body past two kibibytes. Line 18 of m06 is filler that pads this body past two kibibytes. Line 19 of m06 is filler that pads this body past two kibibytes. Line 20 of m06 is filler that pads this body past two kibibytes. Line 21 of m06 is filler that pads this body past two kibibytes. Line 22 of m06 is filler that pads this body past two kibibytes. Line 23 of m06 is filler that pads this body past two kibibytes. Line 24 of m06 is filler that pads this body past two kibibytes. Line 25 of m06 is filler that pads this body past two kibibytes. Line 26 of m06 is filler that pads this body past two kibibytes. Line 27 of m06 is filler that pads this body past two kibibytes. Line 28 of m06 is filler that pads this body past two kibibytes. Line 29 of m06 is filler that pads this body past two kibibytes. Line 30 of m06 is filler that pads this body past two kibibytes. Line 31 of m06 is filler that pads this body past two kibibytes. Line 32 of m06 is filler that pads this body past two kibibytes. TAIL06"},
+      "capture": {"V06": {"path": "$.result.version", "kind": "token"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "remember-m07",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/m07", "--title", "Memory m07 qalpha quniq07", "--json"],
+      "stdin": {"name": "B07", "text": "qalpha quniq07 Line 01 of m07 is filler that pads this body past two kibibytes. Line 02 of m07 is filler that pads this body past two kibibytes. Line 03 of m07 is filler that pads this body past two kibibytes. Line 04 of m07 is filler that pads this body past two kibibytes. Line 05 of m07 is filler that pads this body past two kibibytes. Line 06 of m07 is filler that pads this body past two kibibytes. Line 07 of m07 is filler that pads this body past two kibibytes. Line 08 of m07 is filler that pads this body past two kibibytes. Line 09 of m07 is filler that pads this body past two kibibytes. Line 10 of m07 is filler that pads this body past two kibibytes. Line 11 of m07 is filler that pads this body past two kibibytes. Line 12 of m07 is filler that pads this body past two kibibytes. Line 13 of m07 is filler that pads this body past two kibibytes. Line 14 of m07 is filler that pads this body past two kibibytes. Line 15 of m07 is filler that pads this body past two kibibytes. Line 16 of m07 is filler that pads this body past two kibibytes. Line 17 of m07 is filler that pads this body past two kibibytes. Line 18 of m07 is filler that pads this body past two kibibytes. Line 19 of m07 is filler that pads this body past two kibibytes. Line 20 of m07 is filler that pads this body past two kibibytes. Line 21 of m07 is filler that pads this body past two kibibytes. Line 22 of m07 is filler that pads this body past two kibibytes. Line 23 of m07 is filler that pads this body past two kibibytes. Line 24 of m07 is filler that pads this body past two kibibytes. Line 25 of m07 is filler that pads this body past two kibibytes. Line 26 of m07 is filler that pads this body past two kibibytes. Line 27 of m07 is filler that pads this body past two kibibytes. Line 28 of m07 is filler that pads this body past two kibibytes. Line 29 of m07 is filler that pads this body past two kibibytes. Line 30 of m07 is filler that pads this body past two kibibytes. Line 31 of m07 is filler that pads this body past two kibibytes. Line 32 of m07 is filler that pads this body past two kibibytes. TAIL07"},
+      "capture": {
+        "V07": {"path": "$.result.version", "kind": "token"},
+        "T07": {"path": "$.result.properties.title"}
+      },
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "remember-m08",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/m08", "--title", "Memory m08 qbravo quniq08", "--json"],
+      "stdin": {"name": "B08", "text": "qbravo quniq08 Line 01 of m08 is filler that pads this body past two kibibytes. Line 02 of m08 is filler that pads this body past two kibibytes. Line 03 of m08 is filler that pads this body past two kibibytes. Line 04 of m08 is filler that pads this body past two kibibytes. Line 05 of m08 is filler that pads this body past two kibibytes. Line 06 of m08 is filler that pads this body past two kibibytes. Line 07 of m08 is filler that pads this body past two kibibytes. Line 08 of m08 is filler that pads this body past two kibibytes. Line 09 of m08 is filler that pads this body past two kibibytes. Line 10 of m08 is filler that pads this body past two kibibytes. Line 11 of m08 is filler that pads this body past two kibibytes. Line 12 of m08 is filler that pads this body past two kibibytes. Line 13 of m08 is filler that pads this body past two kibibytes. Line 14 of m08 is filler that pads this body past two kibibytes. Line 15 of m08 is filler that pads this body past two kibibytes. Line 16 of m08 is filler that pads this body past two kibibytes. Line 17 of m08 is filler that pads this body past two kibibytes. Line 18 of m08 is filler that pads this body past two kibibytes. Line 19 of m08 is filler that pads this body past two kibibytes. Line 20 of m08 is filler that pads this body past two kibibytes. Line 21 of m08 is filler that pads this body past two kibibytes. Line 22 of m08 is filler that pads this body past two kibibytes. Line 23 of m08 is filler that pads this body past two kibibytes. Line 24 of m08 is filler that pads this body past two kibibytes. Line 25 of m08 is filler that pads this body past two kibibytes. Line 26 of m08 is filler that pads this body past two kibibytes. Line 27 of m08 is filler that pads this body past two kibibytes. Line 28 of m08 is filler that pads this body past two kibibytes. Line 29 of m08 is filler that pads this body past two kibibytes. Line 30 of m08 is filler that pads this body past two kibibytes. Line 31 of m08 is filler that pads this body past two kibibytes. Line 32 of m08 is filler that pads this body past two kibibytes. TAIL08"},
+      "capture": {
+        "V08": {"path": "$.result.version", "kind": "token"},
+        "T08": {"path": "$.result.properties.title"}
+      },
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "search-qa",
+      "argv": ["memories", "qalpha", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/m02", "https://example.invalid/scenarios/beads/scn/m05", "https://example.invalid/scenarios/beads/scn/m07"]},
+        {"op": "contains", "marker": "Memory m02 qalpha quniq02", "in": "stdout"},
+        {"op": "contains", "marker": "Memory m05 qalpha qbravo quniq05", "in": "stdout"},
+        {"op": "contains", "marker": "Memory m07 qalpha quniq07", "in": "stdout"},
+        {"op": "not_contains", "marker": "TAIL", "in": "stdout"}
+      ]
+    },
+    {
+      "name": "search-qa-again",
+      "argv": ["memories", "qalpha", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "compare",
+         "left": {"step": "search-qa-again", "field": "stdout"},
+         "right": {"step": "search-qa", "field": "stdout"},
+         "relation": "equal"}
+      ]
+    },
+    {
+      "name": "search-qa-all",
+      "argv": ["memories", "qalpha", "--all", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/m02", "https://example.invalid/scenarios/beads/scn/m05", "https://example.invalid/scenarios/beads/scn/m07"]},
+        {"op": "not_contains", "marker": "TAIL", "in": "stdout"}
+      ]
+    },
+    {
+      "name": "search-qb",
+      "argv": ["memories", "qbravo", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/m05", "https://example.invalid/scenarios/beads/scn/m08"]},
+        {"op": "not_contains", "marker": "TAIL", "in": "stdout"}
+      ]
+    },
+    {
+      "name": "search-none",
+      "argv": ["memories", "qnosuch", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": []},
+        {"op": "not_contains", "marker": "filler", "in": "stdout"},
+        {"op": "not_contains", "marker": "TAIL", "in": "stdout"}
+      ]
+    },
+    {
+      "name": "address-m02",
+      "argv": ["memories", "quniq02", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/m02"]},
+        {"op": "json_path", "path": "$.result.items[0].version", "equals_capture": "V02"},
+        {"op": "json_path", "path": "$.result.items[0].title", "equals_capture": "T02"}
+      ]
+    },
+    {
+      "name": "address-m05",
+      "argv": ["memories", "quniq05", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/m05"]},
+        {"op": "json_path", "path": "$.result.items[0].version", "equals_capture": "V05"},
+        {"op": "json_path", "path": "$.result.items[0].title", "equals_capture": "T05"}
+      ]
+    },
+    {
+      "name": "address-m07",
+      "argv": ["memories", "quniq07", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/m07"]},
+        {"op": "json_path", "path": "$.result.items[0].version", "equals_capture": "V07"},
+        {"op": "json_path", "path": "$.result.items[0].title", "equals_capture": "T07"}
+      ]
+    },
+    {
+      "name": "address-m08",
+      "argv": ["memories", "quniq08", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/m08"]},
+        {"op": "json_path", "path": "$.result.items[0].version", "equals_capture": "V08"},
+        {"op": "json_path", "path": "$.result.items[0].title", "equals_capture": "T08"}
+      ]
+    },
+    {
+      "name": "recall-m02",
+      "argv": ["recall", "beads/scn/m02"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "stdout", "equals_input": "B02"}
+      ]
+    },
+    {
+      "name": "recall-m07",
+      "argv": ["recall", "beads/scn/m07"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "stdout", "equals_input": "B07"}
+      ]
+    }
+  ]
+}

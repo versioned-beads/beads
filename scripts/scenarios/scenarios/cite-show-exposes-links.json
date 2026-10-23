@@ -1,0 +1,45 @@
+{
+  "id": "cite-show-exposes-links",
+  "title": "show on a task exposes the Link that cites the policy, without expanding the policy body",
+  "spec": [
+    "#5877 S5",
+    "#5877 R9",
+    "#5877 R31 (show exposes its identity and Links without recursively expanding referenced bodies)"
+  ],
+  "state": "xfail",
+  "finding": "be-zf770",
+  "steps": [
+    {
+      "name": "remember-policy",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/policy", "--title", "Key rotation policy", "--json"],
+      "stdin": {"name": "P1", "text": "Rotate the signing keys every ninety days.\nPTAIL1"},
+      "capture": {
+        "PV1": {"path": "$.result.version", "kind": "token"},
+        "PREV1": {"path": "$.result.revision", "kind": "token"}
+      },
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "create-task",
+      "argv": ["create", "Security task", "--id", "beads/scn/task", "--json"],
+      "capture": {"TASK_LEGACY_ID": {"path": "$.result.properties.id", "kind": "id"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "link-task-policy",
+      "argv": ["link", "beads/scn/task", "beads/scn/policy", "--resource-type",
+               "https://example.invalid/scenarios/types/preview-related-v2", "--id", "links/t-p", "--json"],
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "show-task",
+      "argv": ["show", "beads/scn/task", "--json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "contains", "path": "$.result.id", "marker": "beads/scn/task"},
+        {"op": "contains", "in": "stdout", "marker": "links/t-p"},
+        {"op": "not_contains", "in": "stdout", "marker": "PTAIL"}
+      ]
+    }
+  ]
+}
