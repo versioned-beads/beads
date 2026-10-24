@@ -350,6 +350,57 @@ func TestTestScriptPrebuiltTestBinaryContract(t *testing.T) {
 		}
 	})
 
+	// #7177: a developer's own GO_TEST_PARALLEL=2 override must not leak
+	// into this default-contract fixture, the same way TEST_TIMEOUT and the
+	// BEADS_TEST_ENV_* markers are already isolated above for an analogous
+	// reason. The fixture asserts the hardcoded "-test.parallel 4" default;
+	// without isolation it inherits whatever this test binary's own process
+	// happens to run under.
+	t.Run("isolates the default -test.parallel from an inherited GO_TEST_PARALLEL override", func(t *testing.T) {
+		t.Setenv("GO_TEST_PARALLEL", "2")
+		repoRoot := sourceRepoRoot(t)
+		run := runTestScriptWithPrebuiltBinary(t, repoRoot, []string{"./scripts/ci"})
+		wantArgs := []string{"-test.timeout", "25m", "-test.parallel", "4", "-test.paniconexit0"}
+		if strings.Join(run.args, " ") != strings.Join(wantArgs, " ") {
+			t.Fatalf("args = %v, want %v (GO_TEST_PARALLEL=2 leaked into the default-contract fixture)", run.args, wantArgs)
+		}
+	})
+
+	// The same leak through the other scripts/test.sh knobs that become child
+	// args on the prebuilt-binary branch: TEST_VERBOSE adds -test.v, TEST_RUN
+	// adds -test.run and TEST_COUNT adds -test.count. The fixture asserts the
+	// exact default args, so a developer's own export of any of them must not
+	// reach it.
+	t.Run("isolates the default args from an inherited TEST_VERBOSE override", func(t *testing.T) {
+		t.Setenv("TEST_VERBOSE", "-v")
+		repoRoot := sourceRepoRoot(t)
+		run := runTestScriptWithPrebuiltBinary(t, repoRoot, []string{"./scripts/ci"})
+		wantArgs := []string{"-test.timeout", "25m", "-test.parallel", "4", "-test.paniconexit0"}
+		if strings.Join(run.args, " ") != strings.Join(wantArgs, " ") {
+			t.Fatalf("args = %v, want %v (TEST_VERBOSE=-v leaked into the default-contract fixture)", run.args, wantArgs)
+		}
+	})
+
+	t.Run("isolates the default args from an inherited TEST_RUN override", func(t *testing.T) {
+		t.Setenv("TEST_RUN", ".")
+		repoRoot := sourceRepoRoot(t)
+		run := runTestScriptWithPrebuiltBinary(t, repoRoot, []string{"./scripts/ci"})
+		wantArgs := []string{"-test.timeout", "25m", "-test.parallel", "4", "-test.paniconexit0"}
+		if strings.Join(run.args, " ") != strings.Join(wantArgs, " ") {
+			t.Fatalf("args = %v, want %v (TEST_RUN=. leaked into the default-contract fixture)", run.args, wantArgs)
+		}
+	})
+
+	t.Run("isolates the default args from an inherited TEST_COUNT override", func(t *testing.T) {
+		t.Setenv("TEST_COUNT", "1")
+		repoRoot := sourceRepoRoot(t)
+		run := runTestScriptWithPrebuiltBinary(t, repoRoot, []string{"./scripts/ci"})
+		wantArgs := []string{"-test.timeout", "25m", "-test.parallel", "4", "-test.paniconexit0"}
+		if strings.Join(run.args, " ") != strings.Join(wantArgs, " ") {
+			t.Fatalf("args = %v, want %v (TEST_COUNT=1 leaked into the default-contract fixture)", run.args, wantArgs)
+		}
+	})
+
 	t.Run("refuses more than one package", func(t *testing.T) {
 		repoRoot := sourceRepoRoot(t)
 		output, err := runTestScriptWithPrebuiltBinaryExpectFailure(t, repoRoot, []string{"./scripts/ci", "./scripts"})
@@ -477,11 +528,27 @@ func runTestScriptPrebuiltBinary(t *testing.T, repoRoot string, args []string) (
 	// non-nested invocation regardless of the ambient env this test binary
 	// itself happens to be running under.
 	env := append(filterEnv(os.Environ(),
+		// TEST_VERBOSE, TEST_RUN and TEST_COUNT: scripts/test.sh turns each into
+		// -v, -run or -count on this path, so a developer's own export would add
+		// -test.v, -test.run or -test.count to the child args that the
+		// default-contract subtests below assert exactly. Same reason as
+		// TEST_TIMEOUT and GO_TEST_PARALLEL.
+		"TEST_VERBOSE",
+		"TEST_RUN",
+		"TEST_COUNT",
 		"TEST_TIMEOUT",
 		"BEADS_TEST_ENV_ACTIVE",
 		"BEADS_TEST_ENV_ROOT",
 		"BEADS_TEST_ENV_DISABLE",
 		"BEADS_TEST_ENV_KEEP",
+		// GO_TEST_PARALLEL (#7177): scripts/test.sh explicitly supports this
+		// as a caller override, same as TEST_TIMEOUT above, so a developer
+		// running `go test ./scripts/...` with GO_TEST_PARALLEL=2 set in
+		// their own shell must not have it leak into this fixture's
+		// subprocess — the default-contract subtests below assert the
+		// hardcoded "-test.parallel 4" default, not whatever this test
+		// binary's own process happens to run under.
+		"GO_TEST_PARALLEL",
 	),
 		"BEADS_TEST_BD_BINARY=/nonexistent-bd-not-needed-in-prebuilt-test-binary-mode",
 		"BEADS_TEST_PREBUILT_TEST_BINARY="+fakeBin,
