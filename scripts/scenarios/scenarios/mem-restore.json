@@ -1,0 +1,22 @@
+{
+  "id": "mem-restore",
+  "title": "Restore: a forgotten Memory is revived under the same identity from a retained version as a new attributed version (declared gap, not run; the one step is a placeholder because the driver requires a step)",
+  "spec": [
+    "#5877 S3",
+    "#5877 R5a",
+    "#5877 R13",
+    "#5898 R4.1 (a disappearance is reversible: restore revives the same identity from a retained version as a new attributed version)",
+    "be-tatfn item 8"
+  ],
+  "state": "skip",
+  "gap": "be-tatfn#8",
+  "steps": [
+    {
+      "name": "placeholder-remember-restore-target",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/restore", "--title", "Memory to restore", "--json"],
+      "stdin": {"name": "RS1", "text": "This Memory is written so that it can be forgotten and restored.\n"},
+      "capture": {"RSV1": {"path": "$.result.version", "kind": "token"}},
+      "expect": [{"op": "exit", "equals": 0}]
+    }
+  ]
+}

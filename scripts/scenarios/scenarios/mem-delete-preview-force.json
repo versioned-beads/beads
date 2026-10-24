@@ -1,0 +1,104 @@
+{
+  "id": "mem-delete-preview-force",
+  "title": "bd delete on a Memory: without --force it is only a preview and changes nothing; with --force it performs the forget (the Memory leaves search while the retained version stays readable with its attribution)",
+  "spec": [
+    "#5877 R5a (delete keeps its shipped confirmation model, an unforced run previews; forget and bd delete addressed to a Memory perform the same operation)",
+    "#5877 R31 (the delete row)",
+    "#5877 S3 (retained versions and their Change Attribution remain readable by version; a forgotten Memory disappears from current state and from search)",
+    "#5877 R12"
+  ],
+  "state": "pass",
+  "steps": [
+    {
+      "name": "remember-control",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/m3b", "--title", "Control m3b qctlm3b", "--json"],
+      "stdin": {"name": "M3B", "text": "qctlm3b is the control Memory that stays live.\n"},
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "remember-m3",
+      "argv": ["remember", "--stdin", "--id", "beads/scn/m3", "--title", "Memory m3 qdelm3", "--json"],
+      "actor": "agent-one",
+      "stdin": {"name": "M3", "text": "qdelm3 body written for the delete lifecycle scenario.\n"},
+      "capture": {
+        "V1": {"path": "$.result.version", "kind": "token"},
+        "REV1": {"path": "$.result.revision", "kind": "token"}
+      },
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "delete-preview",
+      "argv": ["delete", "beads/scn/m3", "--json"],
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "recall-after-preview",
+      "argv": ["recall", "beads/scn/m3"],
+      "expect": [{"op": "exit", "equals": 0}, {"op": "stdout", "equals_input": "M3"}]
+    },
+    {
+      "name": "search-after-preview",
+      "argv": ["memories", "qdelm3", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/m3"]}
+      ]
+    },
+    {
+      "name": "show-after-preview",
+      "argv": ["show", "beads/scn/m3", "--json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "json_path", "path": "$.result.version", "equals_capture": "V1"}
+      ]
+    },
+    {
+      "name": "delete-force",
+      "argv": ["delete", "beads/scn/m3", "--force", "--if-revision", "${REV1}", "--json"],
+      "expect": [{"op": "exit", "equals": 0}]
+    },
+    {
+      "name": "search-m3-after-delete",
+      "argv": ["memories", "qdelm3", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": []}
+      ]
+    },
+    {
+      "name": "search-control-after-delete",
+      "argv": ["memories", "qctlm3b", "--format", "records-json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "id_set", "path": "$.result.items[*].id", "equals": ["https://example.invalid/scenarios/beads/scn/m3b"]}
+      ]
+    },
+    {
+      "name": "show-v1-after-delete",
+      "argv": ["show", "beads/scn/m3", "--version", "${V1}", "--json"],
+      "expect": [
+        {"op": "exit", "equals": 0},
+        {"op": "json_path", "path": "$.result.version", "equals_capture": "V1"},
+        {"op": "contains", "marker": "Memory m3 qdelm3", "path": "$.result.properties.title"},
+        {"op": "compare",
+         "left": {"step": "show-v1-after-delete", "path": "$.result.properties.title"},
+         "right": {"step": "remember-m3", "path": "$.result.properties.title"},
+         "relation": "equal"},
+        {"op": "contains", "marker": "qdelm3 body written for the delete lifecycle scenario.", "path": "$.result.properties.body"},
+        {"op": "compare",
+         "left": {"step": "show-v1-after-delete", "path": "$.result.properties.body"},
+         "right": {"step": "remember-m3", "path": "$.result.properties.body"},
+         "relation": "equal"},
+        {"op": "contains", "marker": "agent-one", "path": "$.result.attribution.actor"},
+        {"op": "compare",
+         "left": {"step": "show-v1-after-delete", "path": "$.result.attribution.actor"},
+         "right": {"step": "remember-m3", "path": "$.result.attribution.actor"},
+         "relation": "equal"},
+        {"op": "compare",
+         "left": {"step": "show-v1-after-delete", "path": "$.result.attribution.recordedAt"},
+         "right": {"step": "remember-m3", "path": "$.result.attribution.recordedAt"},
+         "relation": "equal"}
+      ]
+    }
+  ]
+}
