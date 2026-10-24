@@ -28,7 +28,7 @@ bd status --graph
 The Scope URL establishes canonical identity; this command does not start an
 HTTP server at that address. The example skips agent-file and hook setup to
 keep the CLI exercise isolated. See the
-[graph preview technical reference](/reference/graph-preview) for supported
+[Graph CLI Specification (Draft)](/reference/graph-cli-specification-draft) for supported
 embedded and external Dolt modes, agent setup, limits, and refusals.
 
 This page is the evolving **task-oriented CLI guide**. The graph preview
@@ -36,6 +36,9 @@ technical reference is the evolving, detailed command matrix and contract;
 neither page is a frozen release note. The blog post explains the model and
 links to these pages for commands that may change after publication. Ordinary
 Beads workspaces keep their existing Issue and key/value-memory commands.
+The technical reference also carries the [proposed next-milestone command contract](/reference/graph-cli-specification-draft#proposed-command-contract-for-the-next-milestone);
+its **NYI** rows describe proposed behavior, not commands available in this
+build. Use the current command matrix there when trying the preview.
 
 In a graph workspace, a Bead is an Issue or a Memory. Its canonical identity
 is under `beads/`. In CLI arguments, `policy` means `beads/policy`; a Link
@@ -191,7 +194,7 @@ TOKEN` to reject a stale source. Link updates and unlink still require their
 own `--if-revision TOKEN` or `--unconditional` choice. Unlink removes the
 current Link but retains its identity and prior snapshots. The blocking
 `types/preview-blocks-v1` Type is only for live Issues; it refuses a Memory
-endpoint. See the [technical reference](/reference/graph-preview) for the
+endpoint. See the [Graph CLI Specification (Draft)](/reference/graph-cli-specification-draft) for the
 separate blocking Dependency unlink rules and Link Type bounds.
 
 ## Versioning and History
@@ -232,7 +235,7 @@ bd history policy  # same listing in a graph workspace
 
 `bd remember --update` defaults to unconditional acceptance. Memory deletion,
 `bd update`, and Link edits/removal still have their command-specific guard
-requirements; consult the [graph preview reference](/reference/graph-preview) before
+requirements; consult the [Graph CLI Specification (Draft)](/reference/graph-cli-specification-draft) before
 automating them. A semantic no-op retains the existing revision.
 
 `bd versions ID` lists a Memory, Issue or Link's versions newest first in a
@@ -246,7 +249,7 @@ Link's deletion marker is listed with `removed: true` but is not a readable
 Link version. Memory deletion adds no deletion version. There is still no
 BDP HTTP History, as-of selection or restoration. `bd status --graph` reports
 `versionList: true`; `historyExact: false` refers to the unavailable HTTP
-History profile. The [technical reference](/reference/graph-preview#list-a-resources-versions)
+History profile. The [technical reference](/reference/graph-cli-specification-draft#list-a-resources-versions)
 details ordering and refusal behavior.
 
 ## Discover installed Types
